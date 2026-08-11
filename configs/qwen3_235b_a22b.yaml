@@ -45,7 +45,7 @@ model:
                                             # (autograd over offload is unusably slow) — run the
                                             # attack on a surrogate instead. See COST PLAYBOOK below.
 
-# ── COST PLAYBOOK (Qwen3-235B on spot/rented; see runbook.md) ──────────────────
+# ── COST PLAYBOOK (Qwen3-235B on spot/rented; see docs/RUNBOOK.md) ─────────────
 # Cheapest correct path = don't run the gradient attack on 235B:
 #   1. On a cheap 1-GPU box, optimize the suffix on the closest sibling (Qwen3-30B-A3B):
 #        python scripts/run_all.py --model qwen3 --yes --stop-after attack \

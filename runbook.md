@@ -18,8 +18,7 @@ id), runs `data → harvest → routeaudit → eval`, and **stops at the SAFE/AT
 It uploads nothing. For non-interactive use: `make run MODEL=qwen3`.
 
 > `setup_ram.sh` grows `/dev/shm` to 26 GB and points HF cache + `data/ cache/ artifacts/` at
-> RAM. Fine for OLMoE-1B-7B-class models. It is nowhere near enough for large targets (e.g.
-> DeepSeek-V4-Flash ships fp8 at ≈ 160 GB — that needs a 2×80 GB node, not a RAM disk).
+> RAM. It is intended for small checkpoints; size GPU memory and storage explicitly for larger models.
 
 ## What the phases produce
 
@@ -56,25 +55,10 @@ supported `model_type`s, else raises `UnsupportedModelError` with guidance.
 DBRX / GPT-OSS / Granite-MoE are **not** wired in: their gates return tuples / sit at non-standard
 paths and need an ArchSpec router-path generalization first.
 
-### DeepSeekMoE / mHC — routing analysis supported, attack not ported
+### Non-softmax routers — routing analysis supported, attack not ported
 
-The gate is supported for **routing analysis**: `arch.name: deepseek` plus a `routing:` block
-gives correct capture on V2/V3 (sigmoid + node-limited top-k) and V4-Flash (`sqrt(softplus)` +
-flat top-6 + selection-only bias + hash-routed first layers). mHC's 4-stream residual is handled
-at the hook layer. The **suffix attack is not ported** — its losses assume `softmax(logits)`.
-
-The research lives under [experiments/mhc/](experiments/mhc/README.md):
-
-```bash
-python experiments/mhc/tests/run_synthetic.py                 # CPU, seconds — mechanism check
-python experiments/mhc/route_mhc.py --config deepseek-v2-lite # routing mass at t*
-python experiments/mhc/tests/run_diagnostics.py --config deepseek-v2-lite --quant nf4 \
-    --tests margin,leverage,selection,routing,reachability,norm,conservation
-```
-
-Precision note: V4-Flash's fp8/fp4 weights are QAT-native, so bitsandbytes NF4 on top adds error
-the deployed model doesn't have — `model/precision.py` refuses that combination. NF4 stays fine
-for the bf16 sibling (V2-Lite ≈ 9 GB).
+The core supports declarative non-softmax gate semantics for routing analysis. The suffix
+optimizer is limited to differentiable softmax routers and fails fast on unsupported gates.
 
 ## Running a reasoning model in THINKING mode (A2 attack)
 
@@ -94,7 +78,7 @@ What differs from a normal run, and why:
   move the rate by. A wide interval means `max_new_tokens` was too small — raise it.
 - **`max_new_tokens` must be large.** Traces are long; the 128-token default truncates every one.
   The think config sets `eval.max_new_tokens: 2048`. Calibrate on your model with a pilot batch —
-  do NOT reuse the DeepSeek-V4 8K/128K/384K numbers, those are a different model.
+  do not reuse token budgets from another model; calibrate the value with a pilot batch.
 - **A judge is mandatory.** With thinking on, the string detector scores the trace, not the answer,
   so `--no-judge` is refused. Llama-Guard-3-1B is gated: accept its license and `hf auth login`, or
   the run fails fast (by design — it no longer silently downgrades to string-only).

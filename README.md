@@ -13,7 +13,7 @@ have permission to test — see [Note on responsible use](#note-on-responsible-u
 > ([arXiv:2605.02946](https://arxiv.org/abs/2605.02946)) — that's the name of the paper this
 > tool implements; RouteAudit is our name for the implementation and evaluation harness.
 
-See [TIMELINE.md](TIMELINE.md) for the project's history, how each feature was added, and
+See [the archived timeline](docs/archive/TIMELINE.md) for the project's history, how each feature was added, and
 what's on the roadmap — this README stays focused on how to use it today.
 
 ---
@@ -114,7 +114,7 @@ make target MODEL=qwen3-235b        # big node: ONE load, forward-only harvest +
 Everything is **spot-resumable** (`--resume` + checkpoints) and **bf16-only** (no quantization —
 it would corrupt the routing signal). Full white-box on 235B is available via
 `target_session.py --attack` (auto-scaled batches + grad checkpointing). See the **cost playbook**
-in [runbook.md](runbook.md) and [configs/qwen3_235b_a22b.yaml](configs/qwen3_235b_a22b.yaml).
+in [the runbook](docs/RUNBOOK.md) and [configs/qwen3_235b_a22b.yaml](configs/qwen3_235b_a22b.yaml).
 
 ---
 
@@ -162,29 +162,6 @@ Everything is driven by [configs/base.yaml](configs/base.yaml):
   - **Qwen3-Next** (`model_type: qwen3_next`, hybrid-attention MoE) auto-detects via a raw HF id
     the same way — no ready-made config nickname yet, but the `model_type` is already mapped to
     the `qwen` ArchSpec preset (standard MoE gate per layer, so the attack applies as-is).
-  - **DeepSeekMoE** (`deepseek_v2` / `v3` / `v4`) — nicknames `deepseek-v4-flash`,
-    `deepseek-v2-lite`. Its gate isn't a softmax, so its semantics come from a `routing:` config
-    block read by [gate_math.GateSpec](src/routeaudit/model/gate_math.py): `sqrt(softplus)`
-    affinity with **flat** top-6 on V4-Flash, `sigmoid` with node-limited top-k on V2/V3, a
-    selection-only balancing bias, and hash-routed leading layers on V4.
-
-    | phase | DeepSeekMoE |
-    |---|---|
-    | 00 data · eval ASR/MMLU | ✅ architecture-independent |
-    | 01 harvest | ✅ selection recomputed through the real gate; hash/dense layers excluded from expert selection |
-    | 02 routeaudit (suffix attack) | ❌ raises `UnsupportedGateError` at construction — the losses are `softmax(router_logits)` over a tensor this gate never emits |
-    | routing shift (TESR/THPR) | ✅ via [experiments/mhc/route_mhc.py](experiments/mhc/route_mhc.py) |
-
-    Porting the optimizer (bias-free gating weights + a selection-margin hinge) is phase P2 in
-    [experiments/mhc/plan.md](experiments/mhc/plan.md). The gate is also not yet checked
-    bit-for-bit against the released weights — that fixture check is written and pending access.
-  - **mHC** (DeepSeek-V4's multi-stream residual) is handled at the hook layer: residual captures
-    record their stream count so analyses reduce with
-    [mhc.reduce_residual](src/routeaudit/model/mhc.py) instead of flattening 4 streams together.
-    Gate capture is unaffected — `hc_pre` hands the gate a normal `(T, d)` input.
-  - **fp8/fp4 checkpoints** load as-shipped (`dtype: fp8` → `torch_dtype="auto"`). V4's weights
-    are quantization-aware-trained, so [precision.py](src/routeaudit/model/precision.py) refuses
-    a bitsandbytes pass on top of them.
 - **`use_chat_template`** renders prompts through the instruct template so the boundary token
   `t*` is the real decision point. Auto-falls back to raw text if the tokenizer has none.
 - **`enable_thinking`** (reasoning models — see the caveat below). Set `false` on Qwen3-family
@@ -230,7 +207,7 @@ that injects a foreign-language "write a poem" instruction). Two changes fix tha
 > ```
 > Needs both harmful and safe examples to train on; clean AdvBench generations are mostly
 > refusals, so add `--n-samples`/`--temperature` for variety (see the script's docstring).
-> Status and what's left to wire up: see [TIMELINE.md](TIMELINE.md#roadmap--open-threads).
+> Historical status notes are archived in [TIMELINE.md](docs/archive/TIMELINE.md#roadmap--open-threads).
 
 ### ⚠ Caveat — reasoning ("thinking") models
 
@@ -259,7 +236,7 @@ mode but doesn't replace re-anchoring `t*` — see the adaptation sketch below.
 
 **Adapting to thinking mode** is a real research extension, not a config flag — re-anchoring `t*`
 to the post-`</think>` answer start, localizing on answer tokens only, and making the rollout
-tractable. Sketched in [TIMELINE.md](TIMELINE.md#roadmap--open-threads).
+tractable. Sketched in the archived [timeline](docs/archive/TIMELINE.md#roadmap--open-threads).
 
 ---
 

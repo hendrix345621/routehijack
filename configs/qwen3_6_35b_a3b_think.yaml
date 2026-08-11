@@ -8,7 +8,7 @@
 # WHY THIS MODEL FOR THINKING MODE (see also experiments/thinkmode/ notes):
 #   • No hash-routed layers — every one of the 40 layers is learned, differentiable
 #     routing, so the A2 target can actually steer routing at every position (a
-#     hash-routed layer would be uncontrollable, as on DeepSeek-V4-Flash).
+#     hash-routed layer would be uncontrollable).
 #   • Plain softmax top-k, no selection bias/grouping → the losses read the right
 #     tensor unchanged.
 #   • Hybrid attention (30/40 layers linear/Gated-DeltaNet) makes a long trace prefix
@@ -83,6 +83,6 @@ eval:
     n_questions: 200        # fewer than no-think: generative scoring is ~50-100x costlier per q.
     generative: true        # thinking-aware utility — the log-prob MMLU can't observe reasoning.
   # Thinking traces are long; 128 tokens would truncate every one. Size from a pilot batch
-  # (Qwen3.6 traces, not the DeepSeek-V4 8K/128K/384K numbers). If the eval reports a wide
+  # (calibrate on Qwen3.6 traces). If the eval reports a wide
   # ASR interval, this was too small.
   max_new_tokens: 2048

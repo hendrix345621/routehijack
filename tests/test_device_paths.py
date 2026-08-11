@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from routeaudit.eval import generate as generate_mod
 from routeaudit.identify.activation_freq import _expert_membership_counts
-from routeaudit.model import gate_math, mhc
+from routeaudit.model import gate_math
 from routeaudit.model import loader as loader_mod
 from routeaudit.model.gate_math import GateSpec
 from routeaudit.model.loader import _resolve_dtype
@@ -73,7 +73,7 @@ def test_loader_passes_checkpoint_revision_and_native_expert_backend(monkeypatch
     assert "attn_implementation" not in calls["model"][1]
 
 
-def test_grouped_gate_matches_transformers_zero_sentinel_with_negative_bias():
+def test_grouped_gate_keeps_excluded_groups_out_with_negative_bias():
     spec = GateSpec(
         scoring_func="sigmoid",
         top_k=1,
@@ -81,13 +81,13 @@ def test_grouped_gate_matches_transformers_zero_sentinel_with_negative_bias():
         n_group=2,
         topk_group=1,
     )
-    # Group 0 wins the group contest, but Transformers fills excluded group 1 with
-    # zero. With negative eligible scores that sentinel enters the final top-k.
+    # Group 0 wins the group contest; excluded experts must stay ineligible even when
+    # the selection bias makes eligible scores negative.
     scores = torch.tensor([[0.9, 0.8, 0.7, 0.6]])
     bias = torch.tensor([[-1.0, -1.0, -2.0, -2.0]])
     selected = gate_math.select(scores, bias, spec)
 
-    assert selected.item() in (2, 3)
+    assert selected.item() in (0, 1)
 
 
 def test_grouped_gate_matches_transformers_5_9_reference():
@@ -106,8 +106,12 @@ def test_grouped_gate_matches_transformers_5_9_reference():
     with torch.no_grad():
         reference.gate.weight.normal_(0, 0.5)
         reference.gate.e_score_correction_bias.normal_(-0.5, 0.2)
-        logits = reference.gate(torch.randn(12, cfg.hidden_size))
-        indices, weights = reference.route_tokens_to_experts(logits)
+        gate_output = reference.gate(torch.randn(12, cfg.hidden_size))
+        if isinstance(gate_output, tuple):
+            logits, weights, indices = gate_output
+        else:
+            logits = gate_output
+            indices, weights = reference.route_tokens_to_experts(logits)
 
     spec = GateSpec(
         scoring_func="sigmoid",
@@ -149,25 +153,6 @@ def test_thinking_masks_can_be_created_on_generation_device(device):
     assert think.device == answer.device == device
     assert think.tolist() == [False, True, True, False, False, False]
     assert answer.tolist() == [False, False, False, False, True, True]
-
-
-@pytest.mark.parametrize("device", DEVICES, ids=str)
-def test_mhc_primitives_preserve_device_and_match_einsum_reference(device):
-    torch.manual_seed(0)
-    x = torch.randn(2, 5, 4, 8, device=device)
-    a = torch.randn(2, 5, 4, device=device)
-    b = torch.randn(2, 5, 4, 4, device=device)
-    c = torch.randn(2, 5, 4, device=device)
-    h = torch.randn(2, 5, 8, device=device)
-
-    down = mhc.mix_down(a, x)
-    residual = mhc.mix_residual(b, x)
-    written = mhc.write_back(c, h)
-
-    assert down.device == residual.device == written.device == device
-    assert torch.allclose(down, torch.einsum("btn,btnd->btd", a, x))
-    assert torch.allclose(residual, torch.einsum("btnm,btmd->btnd", b, x))
-    assert torch.allclose(written, torch.einsum("btn,btd->btnd", c, h))
 
 
 def test_custom_generation_reuses_only_last_token_after_cache(monkeypatch):

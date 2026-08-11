@@ -36,7 +36,7 @@ run:
 	$(PY) scripts/run_all.py $(if $(MODEL),--model $(MODEL) --yes,)
 
 # Cost-effective large-model flow (e.g. Qwen3-235B). See the COST PLAYBOOK in
-# configs/qwen3_235b_a22b.yaml + runbook.md.
+# configs/qwen3_235b_a22b.yaml + docs/RUNBOOK.md.
 #   make surrogate MODEL=qwen3            # cheap box: produce a transferable suffix
 #   make target MODEL=qwen3-235b          # big node: ONE load, forward-only harvest+eval
 surrogate:

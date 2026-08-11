@@ -21,7 +21,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
-mhc = ["transformers>=5.14,<5.15", "kernels>=0.15,<0.16"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
