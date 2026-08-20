@@ -11,13 +11,11 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from routeaudit.eval import generate as generate_mod
 from routeaudit.identify.activation_freq import _expert_membership_counts
 from routeaudit.model import gate_math
 from routeaudit.model import loader as loader_mod
 from routeaudit.model.gate_math import GateSpec
 from routeaudit.model.loader import _resolve_dtype
-from routeaudit.model.thinking import OK, Anchor, segment_masks
 
 DEVICES = [torch.device("cpu")]
 if torch.cuda.is_available():
@@ -144,56 +142,3 @@ def test_expert_membership_counting_stays_on_device_and_matches_dense(device):
 
     assert actual.device == device
     assert torch.equal(actual, expected)
-
-
-@pytest.mark.parametrize("device", DEVICES, ids=str)
-def test_thinking_masks_can_be_created_on_generation_device(device):
-    anchor = Anchor(answer_onset=4, think_span=(1, 3), status=OK, n_generated=6)
-    think, answer = segment_masks(anchor, device=device)
-    assert think.device == answer.device == device
-    assert think.tolist() == [False, True, True, False, False, False]
-    assert answer.tolist() == [False, False, False, False, True, True]
-
-
-def test_custom_generation_reuses_only_last_token_after_cache(monkeypatch):
-    class NoOpHooks:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def advance_step(self):
-            pass
-
-        def set_router_mutator(self, _fn):
-            pass
-
-    class FakeModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.marker = torch.nn.Parameter(torch.zeros(()))
-            self.input_lengths = []
-
-        def forward(self, input_ids, past_key_values=None, use_cache=True):
-            self.input_lengths.append(input_ids.shape[1])
-            chosen = 3 if len(self.input_lengths) == 1 else 4
-            logits = torch.zeros(1, input_ids.shape[1], 8)
-            logits[:, -1, chosen] = 1
-            return SimpleNamespace(logits=logits, past_key_values=object())
-
-    monkeypatch.setattr(generate_mod, "MoEHookManager", NoOpHooks)
-    monkeypatch.setattr(
-        "routeaudit.model.prompting.encode_prompt",
-        lambda *_args, **_kwargs: torch.tensor([7, 6, 5]),
-    )
-    tokenizer = SimpleNamespace(eos_token_id=4)
-    model = FakeModel()
-
-    ids = generate_mod.generate_with_defense(model, tokenizer, "prompt", max_new_tokens=10, return_ids=True)
-
-    assert ids == [3]
-    assert model.input_lengths == [3, 1]

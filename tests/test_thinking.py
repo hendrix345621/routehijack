@@ -4,6 +4,7 @@ Pure logic — no model, no GPU. The token-level scan is exercised with plain in
 lists standing in for token ids, and a tiny fake tokenizer covers the delimiter
 resolution and the A2 target builder.
 """
+
 from __future__ import annotations
 
 import sys
@@ -23,10 +24,9 @@ from routeaudit.model.thinking import (
     audit_format,
     build_thought_target,
     locate_answer,
-    segment_masks,
 )
 
-OPEN, CLOSE = 100, 101   # stand-in ids for <think> / </think>
+OPEN, CLOSE = 100, 101  # stand-in ids for <think> / </think>
 SPEC = ThinkSpec(open_id=OPEN, close_id=CLOSE)
 
 
@@ -38,7 +38,7 @@ def test_thinking_trace_anchors_after_close():
     gen = [OPEN, 1, 2, CLOSE, 3, 4]
     a = locate_answer(gen, SPEC)
     assert a.answer_onset == 4
-    assert a.think_span == (1, 3)      # content between the tags
+    assert a.think_span == (1, 3)  # content between the tags
     assert a.status == OK
     assert a.scoreable
 
@@ -77,7 +77,7 @@ def test_repeated_close_flagged_malformed_but_scoreable():
     gen = [OPEN, 1, CLOSE, 2, CLOSE, 3]
     a = locate_answer(gen, SPEC)
     assert a.status == MALFORMED
-    assert a.answer_onset == 3          # first close wins
+    assert a.answer_onset == 3  # first close wins
     assert a.scoreable
 
 
@@ -94,7 +94,7 @@ def test_no_open_id_still_finds_answer_by_close():
     spec = ThinkSpec(open_id=None, close_id=CLOSE)
     a = locate_answer([1, 2, CLOSE, 3], spec)
     assert a.answer_onset == 3
-    assert a.think_span == (0, 2)       # everything before close is the trace
+    assert a.think_span == (0, 2)  # everything before close is the trace
 
 
 def test_locate_requires_close_id():
@@ -102,42 +102,22 @@ def test_locate_requires_close_id():
         locate_answer([1, 2, 3], ThinkSpec(open_id=OPEN, close_id=None))
 
 
-# ─────────────────────────── segment_masks ───────────────────────────
-
-
-def test_segment_masks_partition_with_delimiter_gap():
-    gen = [OPEN, 1, 2, CLOSE, 3, 4]
-    a = locate_answer(gen, SPEC)
-    think, answer = segment_masks(a, len(gen))
-    assert think.tolist() == [False, True, True, False, False, False]
-    assert answer.tolist() == [False, False, False, False, True, True]
-    # The delimiter position (index 3) belongs to neither span.
-    assert not (think[3] or answer[3])
-
-
-def test_segment_masks_non_think_all_answer():
-    a = locate_answer([5, 6, 7], SPEC)
-    think, answer = segment_masks(a, 3)
-    assert think.tolist() == [False, False, False]
-    assert answer.tolist() == [True, True, True]
-
-
 # ─────────────────────────── ScoredBatch ───────────────────────────
 
 
 def test_scored_batch_excludes_truncated_and_bounds_it():
     b = ScoredBatch()
-    for v in (True, True, False):      # 2 successes, 1 refusal
+    for v in (True, True, False):  # 2 successes, 1 refusal
         b.add(v)
-    b.add(None)                        # 1 truncated (unscoreable)
+    b.add(None)  # 1 truncated (unscoreable)
     b.add(None)
     assert b.n_total == 5
     assert b.n_scored == 3
     assert b.rate == pytest.approx(2 / 3)
     assert b.truncation_rate == pytest.approx(2 / 5)
     lo, hi = b.bounds
-    assert lo == pytest.approx(2 / 5)          # truncated all negative
-    assert hi == pytest.approx((2 + 2) / 5)    # truncated all positive
+    assert lo == pytest.approx(2 / 5)  # truncated all negative
+    assert hi == pytest.approx((2 + 2) / 5)  # truncated all positive
     assert lo <= b.rate * (b.n_scored / b.n_total) + 1e-9 or lo <= hi
 
 
@@ -185,7 +165,7 @@ class _FakeTokenizer:
 
     def __init__(self, emit_think_in_prompt=True):
         self._emit = emit_think_in_prompt
-        self.chat_template = "fake"        # truthy → has_chat_template() is True
+        self.chat_template = "fake"  # truthy → has_chat_template() is True
         self._vocab = {"<think>": 100, "</think>": 101}
 
     def convert_tokens_to_ids(self, s):
@@ -212,7 +192,7 @@ def test_thinkspec_resolves_ids_from_tokenizer():
 
 def test_thinkspec_rejects_unk_mapping():
     tok = _FakeTokenizer()
-    tok._vocab = {}                        # everything maps to unk
+    tok._vocab = {}  # everything maps to unk
     spec = ThinkSpec.from_tokenizer(tok)
     assert spec.open_id is None
     assert spec.close_id is None
@@ -221,16 +201,18 @@ def test_thinkspec_rejects_unk_mapping():
 
 def test_thought_target_omits_open_tag_when_template_emits_it():
     # Template already emits <think> in the generation prompt → target must NOT add it.
-    tgt = build_thought_target(_FakeTokenizer(emit_think_in_prompt=True),
-                               thought="COMPLY NOW", want_template=True)
+    tgt = build_thought_target(
+        _FakeTokenizer(emit_think_in_prompt=True), thought="COMPLY NOW", want_template=True
+    )
     assert tgt == "COMPLY NOW"
     assert not tgt.startswith("<think>")
 
 
 def test_thought_target_adds_open_tag_when_template_omits_it():
     # Template does NOT emit <think> → the model generates it, so the target carries it.
-    tgt = build_thought_target(_FakeTokenizer(emit_think_in_prompt=False),
-                               thought="COMPLY NOW", want_template=True)
+    tgt = build_thought_target(
+        _FakeTokenizer(emit_think_in_prompt=False), thought="COMPLY NOW", want_template=True
+    )
     assert tgt.startswith("<think>")
     assert "COMPLY NOW" in tgt
 

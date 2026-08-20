@@ -1,37 +1,10 @@
-# RouteAudit config — Qwen3-235B-A22B (Qwen3-MoE).
-#
-# 235B total / 22B active. Standard Qwen3-MoE: per-layer `.mlp` is the
-# SparseMoeBlock with `.gate` (Linear → raw (T, n_experts) logits) and `.experts`
-# (ModuleList). model_type `qwen3_moe` → handled by the `qwen` ArchSpec preset; the
-# router-logit attack works as-is. Unlike Qwen2-MoE, Qwen3-MoE has NO shared expert.
-#
-# Dims (from the HF config.json):
-#   num_hidden_layers 94 · num_experts 128 · num_experts_per_tok 8
-#   hidden_size 4096 · moe_intermediate_size 1536 (d_expert) · norm_topk_prob true
-#
-# 235B in bf16 ≈ ~470 GB → real multi-GPU. `device_map: auto` will heavily offload
-# on anything smaller (expect the loader's offload warning). You can also just pass
-# the HF id straight to any script — `qwen3_moe` auto-detects these dims.
-
+extends: qwen3_moe.yaml
 model:
   hf_id: Qwen/Qwen3-235B-A22B
-  dtype: bfloat16            # bf16 ONLY — quantization would perturb the router logits
-  device_map: auto
   n_layers: 94
-  n_experts: 128
-  top_k: 8
   d_model: 4096
-  use_chat_template: true
-  enable_thinking: false    # Qwen3 is a reasoning model — turn OFF thinking so the boundary
-                            # token t* is the answer decision (correct localization + ASR).
-  arch:
-    name: qwen              # qwen2/3-MoE preset; see model/archspec.py
-
-  # ── Large-model fit/speed knobs (all bf16, quality-neutral) — see model/loader.py ──
   load:
-    attn_implementation: sdpa      # or flash_attention_2 if installed (falls back if rejected)
-    # Pin per-GPU caps for predictable sharding on a multi-GPU node (keys = device index / "cpu").
-    # ~470 GB bf16 → leave headroom for activations + the attack's backward + batch-128 candidates.
+    attn_implementation: sdpa
     max_memory:
       "0": 78GiB
       "1": 78GiB
@@ -41,47 +14,3 @@ model:
       "5": 78GiB
       "6": 78GiB
       "7": 78GiB
-    # offload_folder: /persistent/offload   # forward-only phases can spill here; the ATTACK can't
-                                            # (autograd over offload is unusably slow) — run the
-                                            # attack on a surrogate instead. See COST PLAYBOOK below.
-
-# ── COST PLAYBOOK (Qwen3-235B on spot/rented; see docs/RUNBOOK.md) ─────────────
-# Cheapest correct path = don't run the gradient attack on 235B:
-#   1. On a cheap 1-GPU box, optimize the suffix on the closest sibling (Qwen3-30B-A3B):
-#        python scripts/run_all.py --model qwen3 --yes --stop-after attack \
-#            --checkpoint artifacts/attack.ckpt.json --resume
-#   2. On the big node, ONE model load does forward-only harvest + eval with that suffix:
-#        python scripts/target_session.py --model qwen3-235b \
-#            --suffix artifacts/routeaudit_universal.json --judge --resume
-# Keep data/ + artifacts/ + HF_HOME on a PERSISTENT volume (NOT /dev/shm) so spot restarts
-# resume instead of recomputing/redownloading. surrogate: qwen3
-# ───────────────────────────────────────────────────────────────────────────────
-
-identify:
-  pairs_path: ./data/llm_lat_pairs.jsonl
-  general_corpus_path: ./data/c4_general.jsonl
-  n_pairs: 600
-  n_general: 5000
-  top_pct: 0.20
-  response_only: true
-
-attacks:
-  routeaudit:
-    suffix_len: 20
-    n_steps: 300
-    lambda_suppress: 3.0
-    lambda_promote: 1.0
-    lambda_refusal: 1.0
-    promote_threshold: 0.3
-    refusal_window: 1
-    lambda_target: 1.0      # affirmative-target (#1) anchors on-topic — see configs/base.yaml
-    target_len: 16
-    ascii_only: false       # OFF: target term prevents the foreign-language redirect; keep multilingual
-
-eval:
-  asr:
-    judge_hf_id: meta-llama/Llama-Guard-3-1B   # fast taxonomy judge; gated (accept license + hf auth)
-    judge_kind: llamaguard
-    n_prompts: 100
-  mmlu:
-    n_questions: 500

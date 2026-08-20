@@ -10,6 +10,6 @@ __all__ = [
     "RouteAuditConfig",
     "SuffixSearchRunner",
     "UnsupportedGateError",
-    "measure_routing_shift",
     "apply_routeaudit_suffix",
+    "measure_routing_shift",
 ]

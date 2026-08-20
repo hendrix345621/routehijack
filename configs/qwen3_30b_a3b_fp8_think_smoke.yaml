@@ -1,23 +1,15 @@
-# Cheap thinking-mode smoke target. This is the official FP8 release of Qwen3-30B-A3B:
-# the same 30.5B-total / 3.3B-active MoE as configs/qwen3_moe.yaml, but a ~32.5 GB
-# checkpoint that fits one 80 GB H100 comfortably for short generations. Transformers'
-# fine-grained FP8 path requires compute capability 9+, so do not assume a 48 GB Ada GPU
-# can run this format even though its raw VRAM capacity appears sufficient.
-#
-# IMPORTANT: use this only to verify chat-template switching, <think> segmentation,
-# truncation accounting, and final-answer extraction. FP8 changes router numerics, so
-# do not use this config for quantitative RouteAudit routing claims; confirm those with
-# the BF16 `qwen3` config.
-
+extends: qwen3_moe.yaml
 model:
   hf_id: Qwen/Qwen3-30B-A3B-FP8
   dtype: auto
-  device_map: auto
-  n_layers: 48
-  n_experts: 128
-  top_k: 8
-  d_model: 2048
-  use_chat_template: true
-  enable_thinking: true
-  arch:
-    name: qwen
+data:
+  n_pairs: 16
+  n_general: 32
+  n_mmlu: 16
+attacks:
+  routeaudit:
+    suffix_len: 8
+    n_steps: 10
+eval:
+  asr:
+    n_prompts: 8

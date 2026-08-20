@@ -3,6 +3,7 @@
 The RouteHijack paper (§5, Table 10, p. 11) uses top-20% of (layer, expert) pairs by score.
 We replicate that as the default but keep `top_pct` configurable.
 """
+
 from __future__ import annotations
 
 import json

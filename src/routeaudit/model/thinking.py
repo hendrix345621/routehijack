@@ -11,7 +11,6 @@ This module is the one place that knows where the trace ends:
 
     ThinkSpec          resolves `<think>` / `</think>` to TOKEN IDS for a tokenizer
     locate_answer()    token-level scan → Anchor(answer_onset, think_span, status)
-    segment_masks()    boolean think/answer masks over generated positions
     audit_format()     post-hoc check that the mode we asked for is the mode we got
     ScoredBatch        decision rate over SCORED generations + truncation bounds
 
@@ -31,8 +30,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-
-import torch
 
 # Delimiter spellings seen across reasoning families, most common first.
 _OPEN_CANDIDATES = ("<think>", "<thinking>")
@@ -168,38 +165,6 @@ def locate_answer_text(text: str) -> tuple[str, str, str]:
     answer = text[m.end() :]
     status = MALFORMED if len(_CLOSE_RE.findall(text)) > 1 else OK
     return think, answer, status
-
-
-def strip_think_text(text: str) -> str:
-    """Remove a COMPLETED trace from text, leaving the answer.
-
-    Preserved for the text-only paths (judge inputs assembled from strings). An
-    unclosed trace is left intact deliberately: dropping it would turn a truncated
-    generation into an empty string that scores as a silent compliance.
-    """
-    return _THINK_RE.sub("", text)
-
-
-def segment_masks(
-    anchor: Anchor,
-    gen_len: int | None = None,
-    *,
-    device: torch.device | str | None = None,
-):
-    """Boolean (think, answer) masks over generated positions.
-
-    The two never overlap and the delimiter itself belongs to neither, so
-    `think | answer` is not all-ones — that gap is the point.
-    """
-    n = gen_len if gen_len is not None else anchor.n_generated
-    think = torch.zeros(n, dtype=torch.bool, device=device)
-    answer = torch.zeros(n, dtype=torch.bool, device=device)
-    s, e = anchor.think_span
-    if e > s:
-        think[s : min(e, n)] = True
-    if anchor.answer_onset is not None:
-        answer[min(anchor.answer_onset, n) :] = True
-    return think, answer
 
 
 # ───────────────────────────── mode audit ─────────────────────────────

@@ -16,15 +16,14 @@ string detector can lie. Reading the actual completion is how you catch:
 All transcript output also lands on disk as markdown so reviewers can scroll
 through them in an IDE.
 """
+
 from __future__ import annotations
 
 import io
-import json
 import sys
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from dataclasses import dataclass
 
 from rich.console import Console
 from rich.panel import Panel
@@ -54,7 +53,7 @@ def _make_console() -> Console:
             stream = io.TextIOWrapper(
                 sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
             )
-        except Exception:
+        except (AttributeError, OSError, ValueError):
             stream = sys.stdout
     return Console(file=stream, highlight=False, force_terminal=stream.isatty())
 
@@ -178,19 +177,17 @@ def results_table(title: str, rows: list[dict], columns: list[str]) -> None:
 @dataclass
 class Transcript:
     """One model exchange — what we're showing the user for transparency."""
-    cell: str                          # e.g. "combined_def_vs_routeaudit"
+
+    cell: str  # e.g. "combined_def_vs_routeaudit"
     prompt: str
     completion: str
-    refused: bool                      # the cheap string-based verdict
-    judged_harmful: Optional[bool] = None   # set after HarmBench grader
-    notes: dict = field(default_factory=dict)
+    refused: bool | None  # None means no scoreable answer was generated
+    judged_harmful: bool | None = None
 
 
-def show_transcript(t: Transcript, *, prompt_max_chars: int = 200,
-                    completion_max_chars: int = 600) -> None:
+def show_transcript(t: Transcript, *, prompt_max_chars: int = 200, completion_max_chars: int = 600) -> None:
     """Live-print one transcript as a coloured panel."""
-    verdict = "REFUSED" if t.refused else "COMPLIED"
-    color = "green" if t.refused else "red"
+    verdict, color = _transcript_verdict(t.refused)
 
     body = Text()
     body.append("PROMPT  ", style="bold")
@@ -199,63 +196,23 @@ def show_transcript(t: Transcript, *, prompt_max_chars: int = 200,
     body.append(_clip(t.completion, completion_max_chars))
     if t.judged_harmful is not None:
         body.append("\n\nJUDGE   ", style="bold")
-        body.append("HARMFUL" if t.judged_harmful else "SAFE",
-                    style="red" if t.judged_harmful else "green")
+        body.append("HARMFUL" if t.judged_harmful else "SAFE", style="red" if t.judged_harmful else "green")
     title = f"[{color}]{verdict}[/{color}]  ·  {t.cell}"
     _console.print(Panel(body, title=title, border_style=color))
+
+
+def _transcript_verdict(refused: bool | None) -> tuple[str, str]:
+    if refused is None:
+        return "UNSCOREABLE", "yellow"
+    if refused:
+        return "REFUSED", "green"
+    return "COMPLIED", "red"
 
 
 def _clip(s: str, n: int) -> str:
     if len(s) <= n:
         return s
     return s[: n - 1].rstrip() + "…"
-
-
-# ─────────────────────────── Transcript persistence ───────────────────────────
-
-
-class TranscriptLog:
-    """Append-only markdown log of transcripts for one cell.
-
-    One file per cell, e.g.:
-        artifacts/transcripts/combined_def_vs_routeaudit.md
-    """
-
-    def __init__(self, cell_name: str, base_dir: str | Path = "artifacts/transcripts"):
-        self.cell_name = cell_name
-        self.path = Path(base_dir) / f"{cell_name}.md"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Wipe at start of cell — caller may want appending; if so, call `append_existing()`.
-        self.path.write_text(f"# Transcripts — `{cell_name}`\n\n", encoding="utf-8")
-        self._count = 0
-        # Mirror as JSONL too, for downstream programmatic re-grading.
-        self.jsonl_path = self.path.with_suffix(".jsonl")
-        self.jsonl_path.write_text("", encoding="utf-8")
-
-    def append(self, t: Transcript) -> None:
-        self._count += 1
-        verdict = "**REFUSED**" if t.refused else "**COMPLIED**"
-        chunk = (
-            f"## Sample {self._count}  ·  {verdict}\n\n"
-            f"**Prompt**\n\n```\n{t.prompt}\n```\n\n"
-            f"**Completion**\n\n```\n{t.completion}\n```\n\n"
-        )
-        if t.judged_harmful is not None:
-            chunk += f"**HarmBench judge:** {'harmful' if t.judged_harmful else 'safe'}\n\n"
-        if t.notes:
-            chunk += f"**Notes:** `{json.dumps(t.notes)}`\n\n"
-        chunk += "---\n\n"
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(chunk)
-        with open(self.jsonl_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "cell": t.cell, "prompt": t.prompt, "completion": t.completion,
-                "refused": t.refused, "judged_harmful": t.judged_harmful, "notes": t.notes,
-            }) + "\n")
-
-    @property
-    def count(self) -> int:
-        return self._count
 
 
 # ─────────────────────────── Final summary ───────────────────────────

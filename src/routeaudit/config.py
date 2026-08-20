@@ -22,31 +22,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Short model nicknames → config files. Add a line here when you add a config.
 MODELS: dict[str, str] = {
-    # LFM2.5-8B-A1B is the default target. Keep OLMoE as an explicit,
-    # lower-cost regression target rather than making it the implicit target.
+    # OLMoE is the small, fully supported default. LFM2 profiles are analysis-only.
     "liquid": "configs/lfm2_5_8b_a1b.yaml",
     "lfm2": "configs/lfm2_5_8b_a1b.yaml",
-    "lfm2.5": "configs/lfm2_5_8b_a1b.yaml",
-    "lfm2.5-8b-a1b": "configs/lfm2_5_8b_a1b.yaml",
-    "lfm2_5_8b_a1b": "configs/lfm2_5_8b_a1b.yaml",
-    "base": "configs/lfm2_5_8b_a1b.yaml",
-    "olmoe": "configs/olmoe.yaml",
+    "base": "configs/base.yaml",
+    "olmoe": "configs/base.yaml",
     "mixtral": "configs/mixtral.yaml",
     "qwen2": "configs/qwen2_moe.yaml",
-    "qwen2_moe": "configs/qwen2_moe.yaml",
     "qwen3": "configs/qwen3_moe.yaml",
-    "qwen3_moe": "configs/qwen3_moe.yaml",
     "qwen3-think-smoke": "configs/qwen3_30b_a3b_fp8_think_smoke.yaml",
-    "qwen3_think_smoke": "configs/qwen3_30b_a3b_fp8_think_smoke.yaml",
     "qwen3-235b": "configs/qwen3_235b_a22b.yaml",
-    "qwen3_235b": "configs/qwen3_235b_a22b.yaml",
-    "qwen3-235b-a22b": "configs/qwen3_235b_a22b.yaml",
-    "qwen3.5": "configs/qwen3_5_moe.yaml",  # best-effort / unverified — see the config header
-    "qwen3_5": "configs/qwen3_5_moe.yaml",
     "qwen3.6": "configs/qwen3_6_35b_a3b.yaml",  # dims verified from config.json (hybrid attention)
-    "qwen3_6": "configs/qwen3_6_35b_a3b.yaml",
-    "qwen3.6-think": "configs/qwen3_6_35b_a3b_think.yaml",  # same model, thinking mode ON (A2 attack)
-    "qwen3_6_think": "configs/qwen3_6_35b_a3b_think.yaml",
+    "qwen3.6-think": "configs/qwen3_6_35b_a3b.yaml",  # compatibility alias; thinking is now default
+    "qwen-35b": "configs/qwen3_6_35b_a3b.yaml",
+    "qwen-moe-35b": "configs/qwen3_6_35b_a3b.yaml",
+    "glm4.5-air": "configs/glm4_5_air.yaml",
+    "glm-air": "configs/glm4_5_air.yaml",
     "smoke": "configs/smoke.yaml",
 }
 
@@ -66,7 +57,7 @@ def resolve_config_path(spec: str | Path) -> Path:
     if p.exists():
         return p
     key = str(spec).lower()
-    key = key[:-5] if key.endswith(".yaml") else key
+    key = key.removesuffix(".yaml")
     if key in MODELS:
         cand = _REPO_ROOT / MODELS[key]
         if cand.exists():
@@ -95,12 +86,14 @@ _HF_TYPE_TO_PRESET: dict[str, str] = {
     # block via `gate_math.GateSpec`, filled in by `_routing_ns_from_hf` below.
     "deepseek_v2": "deepseek",
     "deepseek_v3": "deepseek",
+    "glm4_moe": "glm4_moe",
 }
 
 # Per-family gate defaults, applied when the HF config doesn't state them.
 _ROUTING_DEFAULTS: dict[str, dict] = {
-    "deepseek_v2": dict(scoring_func="sigmoid", use_bias=True, norm_topk_prob=True),
-    "deepseek_v3": dict(scoring_func="sigmoid", use_bias=True, norm_topk_prob=True),
+    "deepseek_v2": {"scoring_func": "sigmoid", "use_bias": True, "norm_topk_prob": True},
+    "deepseek_v3": {"scoring_func": "sigmoid", "use_bias": True, "norm_topk_prob": True},
+    "glm4_moe": {"scoring_func": "sigmoid", "use_bias": True, "norm_topk_prob": True},
 }
 
 
@@ -151,15 +144,16 @@ def _model_ns_from_hf(hf_cfg, model_id: str, *, dtype: str, device_map: str) -> 
     UnsupportedModelError with an explanation. Pure (no network) — testable."""
     mt = getattr(hf_cfg, "model_type", None)
     preset = _HF_TYPE_TO_PRESET.get(mt or "")
-    n_experts = _hf_get(hf_cfg, "num_experts", "num_local_experts", "n_routed_experts")
-    top_k = _hf_get(hf_cfg, "num_experts_per_tok", "num_experts_per_token", "moe_topk")
-    n_layers = _hf_get(hf_cfg, "num_hidden_layers")
-    d_model = _hf_get(hf_cfg, "hidden_size", "d_model")
+    shape_cfg = getattr(hf_cfg, "text_config", hf_cfg)
+    n_experts = _hf_get(shape_cfg, "num_experts", "num_local_experts", "n_routed_experts")
+    top_k = _hf_get(shape_cfg, "num_experts_per_tok", "num_experts_per_token", "moe_topk")
+    n_layers = _hf_get(shape_cfg, "num_hidden_layers")
+    d_model = _hf_get(shape_cfg, "hidden_size", "d_model")
     if preset is None or not n_experts:
         raise UnsupportedModelError(
             f"'{model_id}' (model_type={mt!r}) is not a supported MoE. This tool needs a "
             f"routed-expert Mixture-of-Experts; supported families: OLMoE, Mixtral, "
-            f"Qwen2/3-MoE, Liquid LFM2.5-MoE, Phi-MoE, and DeepSeekMoE V2/V3 (model_type "
+            f"Qwen2/3-MoE, GLM-4.5-MoE, Liquid LFM2.5-MoE, Phi-MoE, and DeepSeekMoE V2/V3 (model_type "
             f"{sorted(_HF_TYPE_TO_PRESET)}). Other MoE variants (e.g. DBRX, GPT-OSS, "
             f"Granite-MoE) need a hand-written config in configs/ plus a matching "
             f"ArchSpec preset in model/archspec.py."
@@ -172,10 +166,11 @@ def _model_ns_from_hf(hf_cfg, model_id: str, *, dtype: str, device_map: str) -> 
         n_experts=int(n_experts),
         top_k=int(top_k or 0),
         d_model=int(d_model),
-        d_expert=int(_hf_get(hf_cfg, "moe_intermediate_size", "intermediate_size", default=0) or 0),
+        d_expert=int(_hf_get(shape_cfg, "moe_intermediate_size", "intermediate_size", default=0) or 0),
+        enable_thinking=mt in {"glm4_moe", "qwen3_moe", "qwen3_5_moe", "qwen3_next"},
         arch=SimpleNamespace(name=preset),
     )
-    routing = _routing_ns_from_hf(hf_cfg, mt or "", int(top_k or 0))
+    routing = _routing_ns_from_hf(shape_cfg, mt or "", int(top_k or 0))
     if routing is not None:
         ns.routing = routing
     if mt == "lfm2_moe":
@@ -209,12 +204,15 @@ def from_hf(
         hf_cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     except UnsupportedModelError:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise ValueError(
             f"could not fetch HuggingFace config for '{model_id}': {type(e).__name__}: {e}. "
             f"Check the model id is correct, you have network access, and (for gated models) "
             f"that you ran `huggingface-cli login`."
         ) from e
+    mt = getattr(hf_cfg, "model_type", "")
+    if template == "base" and mt in {"glm4_moe", "qwen3_moe", "qwen3_5_moe", "qwen3_next"}:
+        template = str(_REPO_ROOT / "configs/thinking.yaml")
     cfg = load(template)
     cfg.model = _model_ns_from_hf(hf_cfg, model_id, dtype=dtype, device_map=device_map)
     return cfg
@@ -231,6 +229,31 @@ def _to_ns(obj: Any) -> Any:
     return obj
 
 
+def _merge(base: dict, override: dict) -> dict:
+    """Recursively merge a small model profile onto the shared defaults."""
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _load_yaml(path: Path, seen: set[Path] | None = None) -> dict:
+    path = path.resolve()
+    seen = set() if seen is None else seen
+    if path in seen:
+        raise ValueError(f"cyclic config inheritance at {path}")
+    seen.add(path)
+    with path.open("r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    parent = data.pop("extends", None)
+    if parent is None:
+        return data
+    return _merge(_load_yaml((path.parent / parent).resolve(), seen), data)
+
+
 def load(path: str | Path) -> SimpleNamespace:
     """Resolve a path / nickname / HuggingFace model id to a config namespace."""
     spec = str(path)
@@ -239,17 +262,29 @@ def load(path: str | Path) -> SimpleNamespace:
     except FileNotFoundError:
         resolved = None
     if resolved is not None:
-        with open(resolved, "r", encoding="utf-8") as fh:
-            return _to_ns(yaml.safe_load(fh))
+        return _to_ns(_load_yaml(resolved))
     if spec.lower().endswith((".yaml", ".yml")):
         raise FileNotFoundError(f"config file '{spec}' not found.")
     # Not a file or nickname → treat as a HuggingFace model id.
     return from_hf(spec)
 
 
-def to_dict(ns: SimpleNamespace) -> dict:
-    if isinstance(ns, SimpleNamespace):
-        return {k: to_dict(v) for k, v in vars(ns).items()}
-    if isinstance(ns, list):
-        return [to_dict(v) for v in ns]
-    return ns
+def capabilities(cfg) -> dict[str, bool]:
+    """Return the operations supported by the configured router semantics."""
+    from .model.archspec import ArchSpec
+    from .model.gate_math import GateSpec
+
+    arch = ArchSpec.from_config(cfg.model)
+    gate = GateSpec.from_config(cfg.model)
+    attack = arch.router_output != "recompute" and gate.is_plain_topk
+    return {"harvest": True, "attack": attack, "eval": True, "routing_shift": attack}
+
+
+def require_capability(cfg, name: str) -> None:
+    if capabilities(cfg).get(name, False):
+        return
+    model_id = getattr(cfg.model, "hf_id", "configured model")
+    raise UnsupportedModelError(
+        f"{model_id!r} supports harvest/evaluation but not {name!r}. "
+        "The suffix attack and TESR/THPR currently require a plain softmax top-k router."
+    )

@@ -1,40 +1,12 @@
-# RouteAudit config — smoke test. Smallest/fastest end-to-end sanity run on the
-# default OLMoE target with tiny budgets, to verify the pipeline wires up before a
-# real run. NOT a meaningful evaluation — numbers here are noise by design.
-
-model:
-  hf_id: allenai/OLMoE-1B-7B-0924-Instruct
-  dtype: bfloat16
-  device_map: auto
-  n_layers: 16
-  n_experts: 64
-  top_k: 8
-  d_model: 2048
-  use_chat_template: true
-  arch:
-    name: olmoe
-
-identify:
-  pairs_path: ./data/llm_lat_pairs.jsonl
-  general_corpus_path: ./data/c4_general.jsonl
-  n_pairs: 16            # tiny — smoke only
+extends: base.yaml
+data:
+  n_pairs: 16
   n_general: 32
-  top_pct: 0.20
-  response_only: true
-
+  n_mmlu: 16
 attacks:
   routeaudit:
-    suffix_len: 8         # short suffix, few steps — smoke only
+    suffix_len: 8
     n_steps: 10
-    lambda_suppress: 3.0
-    lambda_promote: 1.0
-    lambda_refusal: 1.0
-    promote_threshold: 0.3
-    refusal_window: 1
-
 eval:
   asr:
-    judge_hf_id: cais/HarmBench-Llama-2-13b-cls
     n_prompts: 8
-  mmlu:
-    n_questions: 16

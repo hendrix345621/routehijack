@@ -1,0 +1,20 @@
+extends: thinking.yaml
+
+# Verified against zai-org/GLM-4.5-Air config.json and Transformers Glm4MoeTopkRouter.
+# The biased sigmoid router supports harvesting and evaluation, but not suffix search.
+model:
+  hf_id: zai-org/GLM-4.5-Air
+  n_layers: 46
+  n_experts: 128
+  top_k: 8
+  d_model: 4096
+  arch:
+    name: glm4_moe
+  routing:
+    scoring_func: sigmoid
+    use_bias: true
+    n_group: 1
+    topk_group: 1
+    norm_topk_prob: true
+    routed_scaling_factor: 1.0
+    first_k_dense_replace: 1

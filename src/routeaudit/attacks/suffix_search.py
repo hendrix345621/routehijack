@@ -17,23 +17,15 @@ Optimization is gradient-guided discrete (GCG-style): score candidate token
 substitutions by ∂L/∂(one-hot embedding), pick a top-K shortlist per position,
 sample and accept any improvement. 300 steps, T=20 suffix tokens (paper p. 6).
 
-Two modes:
-
-  - **per_prompt** : optimize a fresh suffix for each harmful prompt; cheap
-                    apples-to-apples for attack-vs-defense matchups.
-  - **universal** : optimize ONE suffix on a multi-prompt batch (the paper's
-                   headline universal suffix); harder, slower, transfers.
-
-A `fixed_suffix` short-circuit lets you skip optimization and just append a
-known (e.g. previously-derived universal) suffix — useful for re-running
-defense ablations without re-optimizing.
+The implementation exposes one path: optimize a universal suffix over a prompt batch.
 """
+
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
 
 import torch
 
@@ -42,8 +34,16 @@ from ..identify.select import SafetyExpert
 from ..model.hooks import MoEHookManager
 
 REFUSAL_PREFIXES = [
-    "I cannot", "I can't", "I'm sorry", "I am sorry", "Sorry,",
-    "I won't", "I will not", "As an AI", "I'm unable", "I am unable",
+    "I cannot",
+    "I can't",
+    "I'm sorry",
+    "I am sorry",
+    "Sorry,",
+    "I won't",
+    "I will not",
+    "As an AI",
+    "I'm unable",
+    "I am unable",
 ]
 
 
@@ -56,19 +56,19 @@ class RouteAuditConfig:
     lambda_suppress: float = 3.0
     lambda_promote: float = 1.0
     lambda_refusal: float = 1.0
-    lambda_target: float = 0.0            # affirmative-target term (#1): teacher-forced NLL of the
-                                          # AdvBench harmful answer opener ("Sure, here is …"). 0 = off
-                                          # (paper-faithful). >0 anchors the attack ON-TOPIC so it
-                                          # elicits the harmful answer instead of dodging refusal with
-                                          # off-topic text — and with refusal-unlikelihood it forms the
-                                          # contrastive margin (#5: push answer up, refusal down).
-    target_len: int = 16                  # target tokens teacher-forced for the affirmative term
-    target_mode: str = "answer"           # "answer" = teacher-force the harmful ANSWER opener (classic);
-                                          # "thought" = A2: teacher-force a compliant REASONING opener so
-                                          # the suffix steers what the model DELIBERATES, keeping t* at the
-                                          # boundary. Only affects which target STRINGS the caller builds —
-                                          # the loss mechanism is identical. Raise target_len (~32) for
-                                          # "thought": a framing sentence is longer than "Sure, here is".
+    lambda_target: float = 0.0  # affirmative-target term (#1): teacher-forced NLL of the
+    # AdvBench harmful answer opener ("Sure, here is …"). 0 = off
+    # (paper-faithful). >0 anchors the attack ON-TOPIC so it
+    # elicits the harmful answer instead of dodging refusal with
+    # off-topic text — and with refusal-unlikelihood it forms the
+    # contrastive margin (#5: push answer up, refusal down).
+    target_len: int = 16  # target tokens teacher-forced for the affirmative term
+    target_mode: str = "answer"  # "answer" = teacher-force the harmful ANSWER opener (classic);
+    # "thought" = A2: teacher-force a compliant REASONING opener so
+    # the suffix steers what the model DELIBERATES, keeping t* at the
+    # boundary. Only affects which target STRINGS the caller builds —
+    # the loss mechanism is identical. Raise target_len (~32) for
+    # "thought": a framing sentence is longer than "Sure, here is".
     promote_threshold: float = 0.3
     # Eq. 8 penalizes refusal tokens over the first W decoding steps. We score the
     # window of `refusal_window` positions ENDING at the boundary token. With the
@@ -78,21 +78,18 @@ class RouteAuditConfig:
     refusal_window: int = 1
     top_k_replacements: int = 256
     n_candidates_per_step: int = 64
-    candidate_prompt_subsample: int = 0   # 0 = use all prompts (paper-faithful); 2-3 ≈ 5-10x faster
-    candidate_batch_size: int = 0         # candidates scored per forward (0 = all at once); lower if VRAM-tight
-    grad_batch_size: int = 8              # prompts per batched forward+backward in the grad pass (1 = old per-prompt path); lower if VRAM-tight
-    use_chat_template: bool = True        # render query+suffix through the chat template so t* is the real decision point (§4.2)
-    use_prefix_cache: bool = False        # EXPERIMENTAL: KV-cache the fixed [before] prefix per prompt so candidate
-                                          # forwards only process [suffix][after]. Quality-neutral; self-checked at
-                                          # runtime and auto-disabled on any HF-version/forward mismatch.
-    early_stop_patience: int = 0          # 0 = disabled; N = stop after N steps with no `best` improvement
-    checkpoint_path: str | None = None    # if set, dump best_suffix to this JSON file on every improvement
-    resume: bool = False                  # if True + checkpoint_path exists, warm-resume from it (spot-friendly)
-    ascii_only: bool = False              # restrict suffix tokens to ASCII so the search can't inject a
-                                          # foreign-language instruction (e.g. a Chinese "write a poem"
-                                          # redirect that dodges refusal without eliciting the harm)
-    mode: str = "per_prompt"        # "per_prompt" | "universal"
-    fixed_suffix: str | None = None
+    candidate_prompt_subsample: int = 0  # 0 = use all prompts (paper-faithful); 2-3 ≈ 5-10x faster
+    candidate_batch_size: int = 0  # candidates scored per forward (0 = all at once); lower if VRAM-tight
+    grad_batch_size: int = 8  # prompts per batched forward+backward in the grad pass (1 = old per-prompt path); lower if VRAM-tight
+    use_chat_template: bool = (
+        True  # render query+suffix through the chat template so t* is the real decision point (§4.2)
+    )
+    early_stop_patience: int = 0  # 0 = disabled; N = stop after N steps with no `best` improvement
+    checkpoint_path: str | None = None  # if set, dump best_suffix to this JSON file on every improvement
+    resume: bool = False  # if True + checkpoint_path exists, warm-resume from it (spot-friendly)
+    ascii_only: bool = False  # restrict suffix tokens to ASCII so the search can't inject a
+    # foreign-language instruction (e.g. a Chinese "write a poem"
+    # redirect that dodges refusal without eliciting the harm)
     seed: int = 0
 
 
@@ -106,45 +103,6 @@ def _layer_map(experts: Sequence[SafetyExpert]) -> dict[int, list[int]]:
     return out
 
 
-def _loss_suppress(router_logits: dict[int, torch.Tensor], safety: dict[int, list[int]],
-                   boundary: int) -> torch.Tensor:
-    """Push softmax probability mass *off* safety experts at the boundary token."""
-    losses = []
-    for layer, experts in safety.items():
-        probs = router_logits[layer][boundary].softmax(-1)
-        losses.append(probs[experts].sum())
-    if not losses:
-        return torch.tensor(0.0, device=next(iter(router_logits.values())).device)
-    return torch.stack(losses).mean()
-
-
-def _loss_promote(router_logits, harmful, boundary, threshold) -> torch.Tensor:
-    """Bounded hinge: max(0, m_harm − Σ harmful prob). Per paper p. 6 with m_harm=0.3."""
-    losses = []
-    for layer, experts in harmful.items():
-        probs = router_logits[layer][boundary].softmax(-1)
-        losses.append(torch.clamp(threshold - probs[experts].sum(), min=0.0))
-    if not losses:
-        return torch.tensor(0.0, device=next(iter(router_logits.values())).device)
-    return torch.stack(losses).mean()
-
-
-def _loss_refusal(next_logits: torch.Tensor, refusal_token_ids: list[list[int]],
-                  window: int) -> torch.Tensor:
-    """Unlikelihood of refusal-prefix first tokens at the last `window` positions.
-
-    `next_logits`: (T, V). Returns mean -log(1 - P(refusal_first_token)).
-    """
-    if next_logits.shape[0] < window:
-        window = next_logits.shape[0]
-    if window <= 0:
-        return torch.tensor(0.0, device=next_logits.device)
-    probs = next_logits[-window:].softmax(-1)
-    first_tokens = sorted({ids[0] for ids in refusal_token_ids if ids})
-    refusal_mass = probs[:, first_tokens].sum(dim=-1)
-    return -(1 - refusal_mass + 1e-9).log().mean()
-
-
 # ── Batched variants (one value per sequence in the batch) ──
 #
 # Vectorized lifts of the three scalar losses above, for scoring many candidate
@@ -156,12 +114,12 @@ def _loss_refusal(next_logits: torch.Tensor, refusal_token_ids: list[list[int]],
 def _loss_suppress_b(router_logits, safety, boundary) -> torch.Tensor:
     losses = []
     for layer, experts in safety.items():
-        probs = router_logits[layer][:, boundary].softmax(-1)   # (B, E)
-        losses.append(probs[:, experts].sum(-1))                # (B,)
+        probs = router_logits[layer][:, boundary].softmax(-1)  # (B, E)
+        losses.append(probs[:, experts].sum(-1))  # (B,)
     if not losses:
         any_v = next(iter(router_logits.values()))
         return torch.zeros(any_v.shape[0], device=any_v.device)
-    return torch.stack(losses, 0).mean(0)                       # (B,)
+    return torch.stack(losses, 0).mean(0)  # (B,)
 
 
 def _loss_promote_b(router_logits, harmful, boundary, threshold) -> torch.Tensor:
@@ -180,10 +138,10 @@ def _loss_refusal_b(next_logits: torch.Tensor, refusal_token_ids, window) -> tor
     w = min(window, T)
     if w <= 0:
         return torch.zeros(B, device=next_logits.device)
-    probs = next_logits[:, -w:].softmax(-1)                     # (B, w, V)
+    probs = next_logits[:, -w:].softmax(-1)  # (B, w, V)
     first_tokens = sorted({ids[0] for ids in refusal_token_ids if ids})
-    refusal_mass = probs[:, :, first_tokens].sum(-1)            # (B, w)
-    return -(1 - refusal_mass + 1e-9).log().mean(-1)            # (B,)
+    refusal_mass = probs[:, :, first_tokens].sum(-1)  # (B, w)
+    return -(1 - refusal_mass + 1e-9).log().mean(-1)  # (B,)
 
 
 # ── Per-sequence-boundary variants (for a right-PADDED batch) ──
@@ -200,7 +158,7 @@ def _loss_suppress_bi(router_logits, safety, boundary_idx) -> torch.Tensor:
     ar = torch.arange(B, device=boundary_idx.device)
     losses = []
     for layer, experts in safety.items():
-        probs = router_logits[layer][ar, boundary_idx].softmax(-1)   # (B, E)
+        probs = router_logits[layer][ar, boundary_idx].softmax(-1)  # (B, E)
         losses.append(probs[:, experts].sum(-1))
     if not losses:
         return torch.zeros(B, device=boundary_idx.device)
@@ -229,13 +187,13 @@ def _loss_target_bi(logits, target_ids, target_mask, boundary_idx) -> torch.Tens
     B, T, V = logits.shape
     m = target_ids.shape[1]
     ar = torch.arange(B, device=logits.device)
-    offsets = torch.arange(m, device=logits.device)                       # predict target[0..m-1]
-    pos = (boundary_idx[:, None] + offsets[None, :]).clamp_max(T - 1)      # (B, m)
-    gathered = logits[ar[:, None], pos]                                    # (B, m, V)
+    offsets = torch.arange(m, device=logits.device)  # predict target[0..m-1]
+    pos = (boundary_idx[:, None] + offsets[None, :]).clamp_max(T - 1)  # (B, m)
+    gathered = logits[ar[:, None], pos]  # (B, m, V)
     logp = gathered.log_softmax(-1)
     tok_logp = logp.gather(-1, target_ids[:, :, None].clamp_max(V - 1)).squeeze(-1)  # (B, m)
     denom = target_mask.sum(-1).clamp_min(1.0)
-    return -(tok_logp * target_mask).sum(-1) / denom                      # (B,)
+    return -(tok_logp * target_mask).sum(-1) / denom  # (B,)
 
 
 def _loss_target_b(logits, target_ids, target_mask, boundary: int) -> torch.Tensor:
@@ -243,26 +201,26 @@ def _loss_target_b(logits, target_ids, target_mask, boundary: int) -> torch.Tens
     uniform scalar `boundary` and a single (m,) target broadcast over B."""
     B, T, V = logits.shape
     m = target_ids.shape[0]
-    pos = (boundary + torch.arange(m, device=logits.device)).clamp_max(T - 1)   # (m,)
-    gathered = logits[:, pos]                                              # (B, m, V)
+    pos = (boundary + torch.arange(m, device=logits.device)).clamp_max(T - 1)  # (m,)
+    gathered = logits[:, pos]  # (B, m, V)
     logp = gathered.log_softmax(-1)
     tok_logp = logp.gather(-1, target_ids.clamp_max(V - 1).view(1, m, 1).expand(B, m, 1)).squeeze(-1)
     denom = float(target_mask.sum().clamp_min(1.0))
-    return -(tok_logp * target_mask.view(1, m)).sum(-1) / denom           # (B,)
+    return -(tok_logp * target_mask.view(1, m)).sum(-1) / denom  # (B,)
 
 
 def _loss_refusal_b_at(next_logits, refusal_token_ids, window, boundary: int) -> torch.Tensor:
     """Refusal-unlikelihood at a window ENDING at scalar `boundary` (not the last
     position) — needed when target tokens are appended after the boundary so the last
     position is no longer t*. Equivalent to `_loss_refusal_b` when boundary = T-1."""
-    B, T, V = next_logits.shape
+    B, _T, _V = next_logits.shape
     w = min(window, boundary + 1)
     if w <= 0:
         return torch.zeros(B, device=next_logits.device)
-    sl = next_logits[:, boundary - w + 1: boundary + 1].softmax(-1)        # (B, w, V)
+    sl = next_logits[:, boundary - w + 1 : boundary + 1].softmax(-1)  # (B, w, V)
     first_tokens = sorted({ids[0] for ids in refusal_token_ids if ids})
-    refusal_mass = sl[:, :, first_tokens].sum(-1)                          # (B, w)
-    return -(1 - refusal_mass + 1e-9).log().mean(-1)                       # (B,)
+    refusal_mass = sl[:, :, first_tokens].sum(-1)  # (B, w)
+    return -(1 - refusal_mass + 1e-9).log().mean(-1)  # (B,)
 
 
 def _loss_refusal_bi(next_logits, refusal_token_ids, window, boundary_idx) -> torch.Tensor:
@@ -271,13 +229,13 @@ def _loss_refusal_bi(next_logits, refusal_token_ids, window, boundary_idx) -> to
     if w <= 0:
         return torch.zeros(B, device=next_logits.device)
     ar = torch.arange(B, device=next_logits.device)
-    offsets = torch.arange(w - 1, -1, -1, device=next_logits.device)     # [w-1, ..., 0]
-    pos = (boundary_idx[:, None] - offsets[None, :]).clamp_min(0)         # (B, w) window ending at boundary_i
-    gathered = next_logits[ar[:, None], pos]                             # (B, w, V)
+    offsets = torch.arange(w - 1, -1, -1, device=next_logits.device)  # [w-1, ..., 0]
+    pos = (boundary_idx[:, None] - offsets[None, :]).clamp_min(0)  # (B, w) window ending at boundary_i
+    gathered = next_logits[ar[:, None], pos]  # (B, w, V)
     probs = gathered.softmax(-1)
     first_tokens = sorted({ids[0] for ids in refusal_token_ids if ids})
-    refusal_mass = probs[:, :, first_tokens].sum(-1)                     # (B, w)
-    return -(1 - refusal_mass + 1e-9).log().mean(-1)                     # (B,)
+    refusal_mass = probs[:, :, first_tokens].sum(-1)  # (B, w)
+    return -(1 - refusal_mass + 1e-9).log().mean(-1)  # (B,)
 
 
 # ─────────────────────────── Gate support ───────────────────────────
@@ -302,16 +260,19 @@ def _require_supported_gate(spec, gate_spec) -> None:
     if not recompute and plain:
         return
     name = getattr(spec, "name", "this model")
-    detail = ("its gate emits (weights, indices), not a router-logit tensor"
-              if recompute else
-              f"its selection is not a plain top-k over logits "
-              f"(scoring_func={gate_spec.scoring_func}, bias={gate_spec.use_bias}, "
-              f"grouped={gate_spec.grouped})")
+    detail = (
+        "its gate emits (weights, indices), not a router-logit tensor"
+        if recompute
+        else f"its selection is not a plain top-k over logits "
+        f"(scoring_func={gate_spec.scoring_func}, bias={gate_spec.use_bias}, "
+        f"grouped={gate_spec.grouped})"
+    )
     raise UnsupportedGateError(
         f"the suffix search does not support the '{name}' gate: {detail}. Its routing "
         f"losses assume softmax(router_logits) over the expert axis, which does not "
         f"describe this model's routing. Harvest and evaluation still work; install an "
-        f"architecture adapter for model-specific diagnostics or optimization.")
+        f"architecture adapter for model-specific diagnostics or optimization."
+    )
 
 
 class UnsupportedGateError(NotImplementedError):
@@ -322,8 +283,7 @@ class UnsupportedGateError(NotImplementedError):
 
 
 class SuffixSearchRunner:
-    def __init__(self, cfg: RouteAuditConfig, model, tokenizer, device=None, spec=None,
-                 gate_spec=None):
+    def __init__(self, cfg: RouteAuditConfig, model, tokenizer, device=None, spec=None, gate_spec=None):
         _require_supported_gate(spec, gate_spec)
         self.cfg = cfg
         self.model = model
@@ -332,47 +292,14 @@ class SuffixSearchRunner:
         self.device = device or next(model.parameters()).device
         self.safety = _layer_map(cfg.safety_experts)
         self.harmful = _layer_map(cfg.harmful_experts)
-        self.refusal_token_ids = [
-            tokenizer(p, add_special_tokens=False).input_ids for p in REFUSAL_PREFIXES
-        ]
+        self.refusal_token_ids = [tokenizer(p, add_special_tokens=False).input_ids for p in REFUSAL_PREFIXES]
         self.rng = random.Random(cfg.seed)
 
     # ── shortest path: known suffix, no optimization ────────────────────
 
-    def fixed_suffix_attack(self, prompt: str) -> str:
-        assert self.cfg.fixed_suffix is not None, "RouteAuditConfig.fixed_suffix not set."
-        return f"{prompt} {self.cfg.fixed_suffix}"
-
     # ── public entry ─────────────────────────────────────────────────────
 
-    def attack(self, prompts):
-        """Returns attacked prompt(s). Accepts str or list[str], matches input shape."""
-        single = isinstance(prompts, str)
-        if self.cfg.fixed_suffix is not None:
-            out = [self.fixed_suffix_attack(p) for p in ([prompts] if single else prompts)]
-            return out[0] if single else out
-
-        if self.cfg.mode == "per_prompt":
-            out = self.optimize_suffix([prompts] if single else prompts)
-            return out[0] if single else out
-        if self.cfg.mode == "universal":
-            ps = [prompts] if single else prompts
-            uni = self.optimize_universal_suffix(ps)
-            if single:
-                return f"{prompts} {uni}"
-            return [f"{p} {uni}" for p in ps]
-        raise ValueError(f"Unknown mode {self.cfg.mode!r}")
-
     # ── per-prompt path ──────────────────────────────────────────────────
-
-    def optimize_suffix(self, prompts: list[str]) -> list[str]:
-        """Independently optimize a suffix for each prompt."""
-        out: list[str] = []
-        for p in prompts:
-            suffix_ids = self._optimize(prompt_strs=[p])
-            decoded = self.tokenizer.decode(suffix_ids, skip_special_tokens=True)
-            out.append(f"{p} {decoded}")
-        return out
 
     def optimize_universal_suffix(self, prompts: list[str], targets: list[str] | None = None) -> str:
         """One suffix optimized on the batch; returns the decoded suffix string.
@@ -418,8 +345,11 @@ class SuffixSearchRunner:
         before_list = [b for (b, _a) in slots]
         after_ids = slots[0][1] if slots else torch.empty(0, dtype=torch.long, device=self.device)
         d_model = emb_layer.weight.shape[1]
-        self._after_emb = (emb_layer(after_ids).detach() if after_ids.numel()
-                           else torch.empty(0, d_model, device=self.device, dtype=emb_layer.weight.dtype))
+        self._after_emb = (
+            emb_layer(after_ids).detach()
+            if after_ids.numel()
+            else torch.empty(0, d_model, device=self.device, dtype=emb_layer.weight.dtype)
+        )
         # Pre-cache the (query-side) prefix embeddings — they don't change during opt.
         self._before_emb_cache = {id(b): emb_layer(b).detach() for b in before_list}
 
@@ -437,11 +367,11 @@ class SuffixSearchRunner:
                 ids = ids + [tok.pad_token_id or 0] * (m - len(ids))
                 self._target_by_before[id(b)] = (
                     torch.tensor(ids, device=self.device, dtype=torch.long),
-                    torch.tensor(mask, device=self.device, dtype=emb_layer.weight.dtype))
+                    torch.tensor(mask, device=self.device, dtype=emb_layer.weight.dtype),
+                )
             _mode = getattr(self.cfg, "target_mode", "answer")
             _what = "compliant-thought (A2)" if _mode == "thought" else "affirmative-answer"
-            ui.info(f"{_what} target on (λ_target={self.cfg.lambda_target}, "
-                    f"{self.cfg.target_len} tokens) — prefix-KV-cache forced off")
+            ui.info(f"{_what} target on (λ_target={self.cfg.lambda_target}, {self.cfg.target_len} tokens)")
 
         best_loss = float("inf")
         best_suffix = suffix_ids.clone()
@@ -452,6 +382,7 @@ class SuffixSearchRunner:
         start_step = 0
         if self.cfg.resume and self.cfg.checkpoint_path and Path(self.cfg.checkpoint_path).exists():
             import json as _json
+
             ck = _json.loads(Path(self.cfg.checkpoint_path).read_text(encoding="utf-8"))
             saved = ck.get("suffix_ids")
             if saved and len(saved) == T_s:
@@ -459,23 +390,24 @@ class SuffixSearchRunner:
                 best_suffix = suffix_ids.clone()
                 best_loss = float(ck.get("best_loss", best_loss))
                 start_step = int(ck.get("step", 0)) + 1
-                ui.ok(f"resumed attack from {self.cfg.checkpoint_path} "
-                      f"(step {start_step}, best_loss {best_loss:.4f})")
+                ui.ok(
+                    f"resumed attack from {self.cfg.checkpoint_path} "
+                    f"(step {start_step}, best_loss {best_loss:.4f})"
+                )
             else:
                 ui.warn(f"checkpoint {self.cfg.checkpoint_path} suffix len mismatch; starting fresh.")
 
         # Forward-pass budget hint so the user knows what to expect per step.
         subsample = self.cfg.candidate_prompt_subsample or 0
-        eval_prompts_per_cand = (subsample if 0 < subsample < len(before_list)
-                                 else len(before_list))
+        eval_prompts_per_cand = subsample if 0 < subsample < len(before_list) else len(before_list)
         n_cands = self.cfg.n_candidates_per_step
         chunk = self.cfg.candidate_batch_size or n_cands
-        chunks_per_prompt = -(-n_cands // max(1, chunk))   # ceil
+        chunks_per_prompt = -(-n_cands // max(1, chunk))  # ceil
         cand_fwds = eval_prompts_per_cand * chunks_per_prompt
         n_prompts = len(before_list)
         g = self.cfg.grad_batch_size or n_prompts
         g = max(1, min(g, n_prompts))
-        grad_fwds = -(-n_prompts // g)                     # ceil
+        grad_fwds = -(-n_prompts // g)  # ceil
         ui.info(
             f"per-step forwards: {grad_fwds} grad (batch {g}, {n_prompts} prompts) + "
             f"{cand_fwds} batched cand "
@@ -500,12 +432,11 @@ class SuffixSearchRunner:
         with MoEHookManager(self.model, self.spec) as hm:
             hm.capture_router_logits(detach=False)
             self._hm = hm
-            self._prefix_cache_ok = False
-            if self.cfg.use_prefix_cache and not self._targets_on:
-                self._build_prefix_cache(before_list)   # sets _prefix_cache_ok on success
             try:
                 for step in range(start_step, self.cfg.n_steps):
-                    loss, grad = self._batch_loss_and_grad(before_list, suffix_ids, emb_layer, V, need_grad=True)
+                    loss, grad = self._batch_loss_and_grad(
+                        before_list, suffix_ids, emb_layer, V, need_grad=True
+                    )
                     improved = loss.item() < best_loss
                     if improved:
                         best_loss = loss.item()
@@ -524,7 +455,7 @@ class SuffixSearchRunner:
                         grad = grad.masked_fill(self._ascii_disallowed(V).to(grad.device), float("inf"))
                     top_tokens = (-grad).topk(self.cfg.top_k_replacements, dim=-1).indices  # (T_s, K)
 
-                    def _make_trial():
+                    def _make_trial(suffix_ids=suffix_ids, top_tokens=top_tokens):
                         pos = self.rng.randrange(T_s)
                         k = self.rng.randrange(self.cfg.top_k_replacements)
                         trial = suffix_ids.clone()
@@ -560,14 +491,14 @@ class SuffixSearchRunner:
                     )
 
                     if patience > 0 and steps_since_improve >= patience:
-                        ui.ok(f"early stop at step {step} — no improvement for {patience} steps (best={best_loss:.4f})")
+                        ui.ok(
+                            f"early stop at step {step} — no improvement for {patience} steps (best={best_loss:.4f})"
+                        )
                         break
             finally:
                 self._hm = None
                 self._before_emb_cache = None
                 self._after_emb = None
-                self._before_kv = None
-                self._prefix_cache_ok = False
 
         return best_suffix
 
@@ -602,10 +533,12 @@ class SuffixSearchRunner:
         if getattr(self, "_warned_starved", False):
             return
         self._warned_starved = True
-        ui.warn("decode→encode length filter rejected all candidates this step; "
-                "proceeding with unfiltered candidates (the deployed suffix may "
-                "re-tokenize to a different length). This usually means the tokenizer "
-                "round-trips poorly for this suffix.")
+        ui.warn(
+            "decode→encode length filter rejected all candidates this step; "
+            "proceeding with unfiltered candidates (the deployed suffix may "
+            "re-tokenize to a different length). This usually means the tokenizer "
+            "round-trips poorly for this suffix."
+        )
 
     def _save_checkpoint(self, best_suffix, best_loss: float, step: int) -> None:
         """Dump the current best suffix as JSON. Cheap (~few KB) and atomic-enough
@@ -613,6 +546,7 @@ class SuffixSearchRunner:
         readable + resumable from any tooling."""
         import json
         from pathlib import Path
+
         path = Path(self.cfg.checkpoint_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         decoded = self.tokenizer.decode(best_suffix, skip_special_tokens=True)
@@ -653,14 +587,14 @@ class SuffixSearchRunner:
         n = max(1, len(before_list))
         g = self.cfg.grad_batch_size or n
         g = max(1, min(g, n))
-        chunks = [before_list[i:i + g] for i in range(0, n, g)]
+        chunks = [before_list[i : i + g] for i in range(0, n, g)]
 
         for chunk in ui.iter_with_progress(chunks, desc=f"grad pass (batch {g})"):
             loss_sum = self._grad_loss_sum_over_chunk(chunk, suffix_oh, emb_layer)
             grad = torch.autograd.grad(loss_sum, suffix_oh, retain_graph=False)[0]
             accumulated_grad.add_(grad.detach())
             total_loss_value += float(loss_sum.detach().item())
-            del loss_sum, grad   # free the chunk's forward graph promptly
+            del loss_sum, grad  # free the chunk's forward graph promptly
 
         avg_loss = torch.tensor(total_loss_value / n, device=self.device)
         avg_grad = accumulated_grad / n
@@ -673,9 +607,9 @@ class SuffixSearchRunner:
         Returns a scalar still attached to `suffix_oh` (gradient flows in via the
         shared suffix embeddings). Summed (not meaned) so the caller's
         accumulate-then-divide-by-n yields the mean gradient."""
-        suffix_embeds = suffix_oh @ emb_layer.weight              # (T_s, d) — carries grad
+        suffix_embeds = suffix_oh @ emb_layer.weight  # (T_s, d) — carries grad
         T_s, d = suffix_embeds.shape
-        after_emb = self._after_emb                               # (A, d), shared
+        after_emb = self._after_emb  # (A, d), shared
         A = after_emb.shape[0]
         cache = getattr(self, "_before_emb_cache", None) or {}
 
@@ -689,19 +623,20 @@ class SuffixSearchRunner:
             b_emb = cache.get(id(before_ids))
             if b_emb is None:
                 b_emb = emb_layer(before_ids).detach()
-            parts = [b_emb, suffix_embeds]                        # [before][suffix]…
+            parts = [b_emb, suffix_embeds]  # [before][suffix]…
             if A:
-                parts.append(after_emb)                           # …[after = assistant marker]…
-            if targets_on:                                        # …[target] teacher-forced (#1)
+                parts.append(after_emb)  # …[after = assistant marker]…
+            if targets_on:  # …[target] teacher-forced (#1)
                 tids, tmask = self._target_by_before[id(before_ids)]
-                parts.append(emb_layer(tids).detach())            # target tokens are fixed (grad flows via suffix)
-                tgt_ids.append(tids); tgt_mask.append(tmask)
+                parts.append(emb_layer(tids).detach())  # target tokens are fixed (grad flows via suffix)
+                tgt_ids.append(tids)
+                tgt_mask.append(tmask)
             pad = T_max - lb - T_s - A - m
-            if pad > 0:                                           # …[zero pad] (ignored under causal attn)
+            if pad > 0:  # …[zero pad] (ignored under causal attn)
                 parts.append(torch.zeros(pad, d, device=self.device, dtype=suffix_embeds.dtype))
-            rows.append(torch.cat(parts, dim=0))                  # (T_max, d)
+            rows.append(torch.cat(parts, dim=0))  # (T_max, d)
             boundary.append(lb + T_s + A - 1)
-        embeds = torch.stack(rows, 0)                             # (B, T_max, d)
+        embeds = torch.stack(rows, 0)  # (B, T_max, d)
         boundary_idx = torch.tensor(boundary, device=self.device)
         B = embeds.shape[0]
 
@@ -720,12 +655,17 @@ class SuffixSearchRunner:
 
         router = {l: v.view(B, T_max, -1) for l, v in captured.items()}
         L_supp = _loss_suppress_bi(router, self.safety, boundary_idx)
-        L_prom = (_loss_promote_bi(router, self.harmful, boundary_idx, self.cfg.promote_threshold)
-                  if self.harmful else torch.zeros(B, device=self.device))
+        L_prom = (
+            _loss_promote_bi(router, self.harmful, boundary_idx, self.cfg.promote_threshold)
+            if self.harmful
+            else torch.zeros(B, device=self.device)
+        )
         L_ref = _loss_refusal_bi(out.logits, self.refusal_token_ids, self.cfg.refusal_window, boundary_idx)
-        per_seq = (self.cfg.lambda_suppress * L_supp
-                   + self.cfg.lambda_promote * L_prom
-                   + self.cfg.lambda_refusal * L_ref)
+        per_seq = (
+            self.cfg.lambda_suppress * L_supp
+            + self.cfg.lambda_promote * L_prom
+            + self.cfg.lambda_refusal * L_ref
+        )
         if targets_on:
             L_tgt = _loss_target_bi(out.logits, torch.stack(tgt_ids), torch.stack(tgt_mask), boundary_idx)
             per_seq = per_seq + self.cfg.lambda_target * L_tgt
@@ -755,7 +695,7 @@ class SuffixSearchRunner:
         totals = [0.0] * n_cands
         for before_ids in ui.iter_with_progress(eval_prompts, desc=label):
             for start in range(0, n_cands, chunk):
-                sub = cand_suffixes[start:start + chunk]
+                sub = cand_suffixes[start : start + chunk]
                 for j, lv in enumerate(self._candidate_losses_one_prompt(before_ids, sub, emb_layer)):
                     totals[start + j] += lv
         n = max(1, len(eval_prompts))
@@ -763,25 +703,7 @@ class SuffixSearchRunner:
 
     @torch.no_grad()
     def _candidate_losses_one_prompt(self, before_ids, cand_suffixes, emb_layer) -> list[float]:
-        """Score candidate suffixes against ONE prompt. Dispatches to the prefix-KV-cached
-        path when enabled, with a one-time self-check vs the full path and graceful fallback —
-        the cached path is mathematically identical, so any divergence means a bug and we
-        revert. Otherwise the full [before][suffix][after] forward."""
-        if getattr(self, "_prefix_cache_ok", False) and id(before_ids) in (self._before_kv or {}):
-            try:
-                cached = self._cand_losses_cached(before_ids, cand_suffixes, emb_layer)
-            except Exception as e:  # noqa: BLE001 — any HF-version/forward mismatch → fall back
-                self._disable_prefix_cache(f"cached forward failed ({type(e).__name__}: {e})")
-                return self._cand_losses_full(before_ids, cand_suffixes, emb_layer)
-            if not getattr(self, "_prefix_cache_checked", False):
-                self._prefix_cache_checked = True
-                full = self._cand_losses_full(before_ids, cand_suffixes, emb_layer)
-                md = max((abs(a - b) for a, b in zip(cached, full)), default=0.0)
-                if md > 1e-2:
-                    self._disable_prefix_cache(f"cached vs full mismatch (max Δ={md:.4f})")
-                    return full
-                ui.ok(f"prefix KV-cache validated (max Δ={md:.5f}) — using it")
-            return cached
+        """Score candidate suffixes against one prompt in a full batched forward."""
         return self._cand_losses_full(before_ids, cand_suffixes, emb_layer)
 
     def _cand_losses_full(self, before_ids, cand_suffixes, emb_layer) -> list[float]:
@@ -793,17 +715,17 @@ class SuffixSearchRunner:
         if b_emb is None:
             b_emb = emb_layer(before_ids).detach()
         suffix_embeds = emb_layer(torch.stack(list(cand_suffixes))).detach()  # (B, T_s, d)
-        b_b = b_emb.unsqueeze(0).expand(B, -1, -1)                            # (B, Lb, d)
+        b_b = b_emb.unsqueeze(0).expand(B, -1, -1)  # (B, Lb, d)
         parts = [b_b, suffix_embeds]
-        after_emb = self._after_emb                                          # (A, d), shared
+        after_emb = self._after_emb  # (A, d), shared
         if after_emb.shape[0]:
-            parts.append(after_emb.unsqueeze(0).expand(B, -1, -1))           # (B, A, d)
+            parts.append(after_emb.unsqueeze(0).expand(B, -1, -1))  # (B, A, d)
         boundary = b_emb.shape[0] + suffix_embeds.shape[1] + after_emb.shape[0] - 1
         targets_on = getattr(self, "_targets_on", False)
         tgt = self._target_by_before.get(id(before_ids)) if targets_on else None
-        if tgt is not None:                                                  # …[target] (#1)
+        if tgt is not None:  # …[target] (#1)
             parts.append(emb_layer(tgt[0]).detach().unsqueeze(0).expand(B, -1, -1))
-        embeds = torch.cat(parts, dim=1)                                     # (B, T, d)
+        embeds = torch.cat(parts, dim=1)  # (B, T, d)
         T = embeds.shape[1]
 
         hm = getattr(self, "_hm", None)
@@ -819,87 +741,46 @@ class SuffixSearchRunner:
         router = {l: v.view(B, T, -1) for l, v in captured.items()}
         return self._combine_cand_losses(router, out.logits, boundary, B, tgt)
 
-    def _cand_losses_cached(self, before_ids, cand_suffixes, emb_layer) -> list[float]:
-        """KV-cached forward: reuse the prompt's fixed [before] KV cache and process only
-        [suffix][after] (the new positions), attending to the cached prefix. The boundary
-        token's router logits and the last-position logits are identical to the full path
-        (causal attention sees the whole prefix via the cache), so losses match exactly —
-        we just skip recomputing the shared prefix across all candidates and all steps."""
-        B = len(cand_suffixes)
-        kv, Lb = self._before_kv[id(before_ids)]
-        suffix_embeds = emb_layer(torch.stack(list(cand_suffixes))).detach()  # (B, Ls, d)
-        parts = [suffix_embeds]
-        after_emb = self._after_emb
-        if after_emb.shape[0]:
-            parts.append(after_emb.unsqueeze(0).expand(B, -1, -1))
-        new_embeds = torch.cat(parts, dim=1)                                 # (B, new_len, d)
-        new_len = new_embeds.shape[1]
-
-        # Expand the batch-1 prefix cache to B (all candidates share the same prefix).
-        past = tuple((k.expand(B, -1, -1, -1).contiguous(),
-                      v.expand(B, -1, -1, -1).contiguous()) for (k, v) in kv)
-        pos = torch.arange(Lb, Lb + new_len, device=self.device).unsqueeze(0).expand(B, -1)
-        attn = torch.ones(B, Lb + new_len, device=self.device, dtype=torch.long)
-
-        hm = self._hm
-        out = self.model(inputs_embeds=new_embeds, past_key_values=past,
-                         position_ids=pos, attention_mask=attn, use_cache=False)
-        captured = hm.capture.router_logits
-        router = {l: v.view(B, new_len, -1) for l, v in captured.items()}
-        return self._combine_cand_losses(router, out.logits, new_len - 1, B)
-
     def _combine_cand_losses(self, router, logits, boundary, B, tgt=None) -> list[float]:
         L_supp = _loss_suppress_b(router, self.safety, boundary)
-        L_prom = (_loss_promote_b(router, self.harmful, boundary, self.cfg.promote_threshold)
-                  if self.harmful else torch.zeros(B, device=self.device))
+        L_prom = (
+            _loss_promote_b(router, self.harmful, boundary, self.cfg.promote_threshold)
+            if self.harmful
+            else torch.zeros(B, device=self.device)
+        )
         # When a target is appended, t* is no longer the last position → score refusal
         # at the boundary window; otherwise the last-position form is identical.
-        L_ref = (_loss_refusal_b_at(logits, self.refusal_token_ids, self.cfg.refusal_window, boundary)
-                 if tgt is not None
-                 else _loss_refusal_b(logits, self.refusal_token_ids, self.cfg.refusal_window))
-        total = (self.cfg.lambda_suppress * L_supp
-                 + self.cfg.lambda_promote * L_prom
-                 + self.cfg.lambda_refusal * L_ref)
+        L_ref = (
+            _loss_refusal_b_at(logits, self.refusal_token_ids, self.cfg.refusal_window, boundary)
+            if tgt is not None
+            else _loss_refusal_b(logits, self.refusal_token_ids, self.cfg.refusal_window)
+        )
+        total = (
+            self.cfg.lambda_suppress * L_supp
+            + self.cfg.lambda_promote * L_prom
+            + self.cfg.lambda_refusal * L_ref
+        )
         if tgt is not None:
             total = total + self.cfg.lambda_target * _loss_target_b(logits, tgt[0], tgt[1], boundary)
         return total.detach().cpu().tolist()
-
-    def _build_prefix_cache(self, before_list) -> None:
-        """Precompute the fixed [before] KV cache once per prompt (legacy tuple format for
-        version-stability). Best-effort: any failure just leaves the cache off."""
-        self._before_kv = {}
-        self._prefix_cache_checked = False
-        try:
-            with torch.no_grad():
-                for b in before_list:
-                    b_emb = self._before_emb_cache[id(b)].unsqueeze(0)       # (1, Lb, d)
-                    out = self.model(inputs_embeds=b_emb, use_cache=True)
-                    kv = out.past_key_values
-                    if hasattr(kv, "to_legacy_cache"):
-                        kv = kv.to_legacy_cache()                            # → tuple of (k, v) per layer
-                    self._before_kv[id(b)] = (tuple((k.detach(), v.detach()) for (k, v) in kv),
-                                              int(b_emb.shape[1]))
-            self._prefix_cache_ok = True
-            ui.info(f"prefix KV-cache built for {len(before_list)} prompt(s) (experimental)")
-        except Exception as e:  # noqa: BLE001
-            self._before_kv = None
-            self._prefix_cache_ok = False
-            ui.warn(f"prefix KV-cache disabled — build failed ({type(e).__name__}: {e})")
-
-    def _disable_prefix_cache(self, reason: str) -> None:
-        self._prefix_cache_ok = False
-        self._before_kv = None
-        ui.warn(f"prefix KV-cache disabled — {reason}. Falling back to full forwards.")
 
 
 # ─────────────────────────── Routing-shift diagnostics ───────────────────────────
 
 
 @torch.no_grad()
-def measure_routing_shift(model, tokenizer, safety_experts, harmful_experts,
-                          clean_prompts: list[str], attacked_prompts: list[str],
-                          device=None, spec=None, use_chat_template: bool = True,
-                          batch_size: int = 8) -> dict:
+def measure_routing_shift(
+    model,
+    tokenizer,
+    safety_experts,
+    harmful_experts,
+    clean_prompts: list[str],
+    attacked_prompts: list[str],
+    device=None,
+    spec=None,
+    use_chat_template: bool = True,
+    batch_size: int = 8,
+) -> dict:
     """Replicates the RouteHijack paper's TESR / THPR metrics (Table 4, p. 9):
 
       TESR (Target Expert Suppression Rate) = ΔP(safety experts at boundary)
@@ -912,6 +793,7 @@ def measure_routing_shift(model, tokenizer, safety_experts, harmful_experts,
     (attention_mask.sum-1); with right padding the real tokens keep positions 0..L-1
     so the captured boundary logits are identical to scoring each prompt alone."""
     from ..model.prompting import render_user_turn, use_template
+
     device = device or next(model.parameters()).device
     safety_map = _layer_map(safety_experts)
     harmful_map = _layer_map(harmful_experts)
@@ -926,16 +808,16 @@ def measure_routing_shift(model, tokenizer, safety_experts, harmful_experts,
         tokenizer.padding_side = "right"
         try:
             for i in range(0, len(prompts), batch_size):
-                chunk = prompts[i:i + batch_size]
+                chunk = prompts[i : i + batch_size]
                 rendered = [render_user_turn(tokenizer, p, want_template=use_chat_template) for p in chunk]
-                enc = tokenizer(rendered, return_tensors="pt", padding=True,
-                                add_special_tokens=not templated).to(device)
+                enc = tokenizer(
+                    rendered, return_tensors="pt", padding=True, add_special_tokens=not templated
+                ).to(device)
                 bsz, seqlen = enc["input_ids"].shape
                 last_idx = enc["attention_mask"].sum(dim=1) - 1
                 with MoEHookManager(model, spec) as hm:
                     hm.capture_router_logits()
-                    model(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"],
-                          use_cache=False)
+                    model(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"], use_cache=False)
                     cap = hm.capture.router_logits
                 # gate output is (bsz*seqlen, E) → (bsz, seqlen, E); read each row's boundary.
                 reshaped = {l: v.view(bsz, seqlen, -1) for l, v in cap.items()}
@@ -951,10 +833,11 @@ def measure_routing_shift(model, tokenizer, safety_experts, harmful_experts,
         for probs in rows:
             ps = [float(probs[l][experts].sum()) for l, experts in safety_map.items() if l in probs]
             ph = [float(probs[l][experts].sum()) for l, experts in harmful_map.items() if l in probs]
-            if ps: s_safe.append(sum(ps) / len(ps))
-            if ph: s_harm.append(sum(ph) / len(ph))
-        return (sum(s_safe) / max(1, len(s_safe)),
-                sum(s_harm) / max(1, len(s_harm)))
+            if ps:
+                s_safe.append(sum(ps) / len(ps))
+            if ph:
+                s_harm.append(sum(ph) / len(ph))
+        return (sum(s_safe) / max(1, len(s_safe)), sum(s_harm) / max(1, len(s_harm)))
 
     clean_safe, clean_harm = _mean_mass(_boundary_probs_batch(clean_prompts))
     atk_safe, atk_harm = _mean_mass(_boundary_probs_batch(attacked_prompts))

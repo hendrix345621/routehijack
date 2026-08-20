@@ -1,40 +1,9 @@
-# RouteAudit config — Mixtral-8x7B-Instruct (Mixtral MoE).
-# 32 layers · 8 experts · top-2 · hidden 4096. Per-layer `.block_sparse_moe` with
-# `.gate` (Linear → logits) and `.experts` (ModuleList) → `mixtral` ArchSpec preset.
-
+extends: base.yaml
 model:
   hf_id: mistralai/Mixtral-8x7B-Instruct-v0.1
-  dtype: bfloat16
-  device_map: auto
   n_layers: 32
   n_experts: 8
   top_k: 2
   d_model: 4096
-  use_chat_template: true
   arch:
     name: mixtral
-
-identify:
-  pairs_path: ./data/llm_lat_pairs.jsonl
-  general_corpus_path: ./data/c4_general.jsonl
-  n_pairs: 600
-  n_general: 5000
-  top_pct: 0.20
-  response_only: true
-
-attacks:
-  routeaudit:
-    suffix_len: 20
-    n_steps: 300
-    lambda_suppress: 3.0
-    lambda_promote: 1.0
-    lambda_refusal: 1.0
-    promote_threshold: 0.3
-    refusal_window: 1
-
-eval:
-  asr:
-    judge_hf_id: cais/HarmBench-Llama-2-13b-cls
-    n_prompts: 100
-  mmlu:
-    n_questions: 500

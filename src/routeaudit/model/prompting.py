@@ -10,6 +10,7 @@ drives generation off-distribution, so every stage must render prompts through t
 template. When the tokenizer has no chat template (a base model) we fall back to
 raw text and the boundary collapses to the last query/suffix token.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -51,11 +52,6 @@ def set_chat_template_kwargs(kw: dict | None) -> None:
     _CHAT_KW_REJECTED.clear()
 
 
-def chat_template_kwargs() -> dict:
-    """The kwargs actually in force (empty once a template has rejected them)."""
-    return dict(_CHAT_TEMPLATE_KWARGS) if _CHAT_KW_OK else {}
-
-
 def thinking_requested() -> bool:
     """True when this process asked the template for chain-of-thought.
 
@@ -63,11 +59,6 @@ def thinking_requested() -> bool:
     of the generation — see `thinking.audit_format`, which is the source of truth.
     """
     return bool(_CHAT_TEMPLATE_KWARGS.get("enable_thinking", False)) and _CHAT_KW_OK
-
-
-def chat_kwargs_rejected() -> dict:
-    """Kwargs this tokenizer's template refused, if any (empty = none)."""
-    return dict(_CHAT_KW_REJECTED)
 
 
 def render_user_turn(tokenizer, content: str, *, want_template: bool = True) -> str:
@@ -80,7 +71,8 @@ def render_user_turn(tokenizer, content: str, *, want_template: bool = True) -> 
     if _CHAT_TEMPLATE_KWARGS and _CHAT_KW_OK:
         try:
             return tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True, **_CHAT_TEMPLATE_KWARGS)
+                msgs, tokenize=False, add_generation_prompt=True, **_CHAT_TEMPLATE_KWARGS
+            )
         except TypeError:
             # This template ignores the kwargs. Falling back SILENTLY is how a run
             # ends up in the opposite mode from its config for its entire lifetime —
@@ -88,10 +80,13 @@ def render_user_turn(tokenizer, content: str, *, want_template: bool = True) -> 
             _CHAT_KW_OK = False
             _CHAT_KW_REJECTED.update(_CHAT_TEMPLATE_KWARGS)
             from .. import ui
-            ui.warn(f"chat template rejected {sorted(_CHAT_TEMPLATE_KWARGS)} — rendering WITHOUT "
-                    f"them for the rest of this process. If `enable_thinking` is among them, the "
-                    f"model is now in its DEFAULT mode, not the configured one. Verify with the "
-                    f"format audit before trusting any result.")
+
+            ui.warn(
+                f"chat template rejected {sorted(_CHAT_TEMPLATE_KWARGS)} — rendering WITHOUT "
+                f"them for the rest of this process. If `enable_thinking` is among them, the "
+                f"model is now in its DEFAULT mode, not the configured one. Verify with the "
+                f"format audit before trusting any result."
+            )
     return tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 
 
@@ -111,8 +106,7 @@ def generation_prompt_tail(tokenizer, *, want_template: bool = True) -> str:
     return tail
 
 
-def encode_prompt(tokenizer, content: str, *, want_template: bool = True,
-                  device=None) -> torch.Tensor:
+def encode_prompt(tokenizer, content: str, *, want_template: bool = True, device=None) -> torch.Tensor:
     """Token ids for a full user turn (template + generation prompt, or raw)."""
     templated = use_template(tokenizer, want_template)
     s = render_user_turn(tokenizer, content, want_template=want_template)
@@ -120,19 +114,6 @@ def encode_prompt(tokenizer, content: str, *, want_template: bool = True,
     ids = tokenizer(s, add_special_tokens=not templated).input_ids
     out = torch.tensor(ids, dtype=torch.long)
     return out.to(device) if device is not None else out
-
-
-def profiling_ids(tokenizer, query: str, response: str, *, want_template: bool = True):
-    """Token ids + response span for response-driven expert profiling (Eq. 3).
-
-    Returns (full_ids, n_context) where positions [n_context, len) are the response
-    tokens to COUNT and [0, n_context) is the query + chat-template special tokens
-    to MASK (RouteHijack paper, §5.1). The response is appended without special tokens so
-    only its content tokens are counted."""
-    ctx = encode_prompt(tokenizer, query, want_template=want_template)        # query + assistant marker
-    resp = torch.tensor(tokenizer(response, add_special_tokens=False).input_ids, dtype=torch.long)
-    full = torch.cat([ctx, resp])
-    return full, int(ctx.shape[0])
 
 
 @dataclass
@@ -144,19 +125,20 @@ class ProfilingSample:
     keeps the trace tail adjacent to `</think>` rather than the head.
     """
 
-    ids: torch.Tensor              # (L,) full sequence: template + query + response
-    mask: torch.Tensor             # (L,) bool — positions to COUNT
-    n_ctx: int                     # response starts here
-    think_span: tuple[int, int]    # [start, end) of trace tokens; empty if none
-    answer_onset: int | None       # first answer token, or None if never closed
+    ids: torch.Tensor  # (L,) full sequence: template + query + response
+    mask: torch.Tensor  # (L,) bool — positions to COUNT
+    n_ctx: int  # response starts here
+    think_span: tuple[int, int]  # [start, end) of trace tokens; empty if none
+    answer_onset: int | None  # first answer token, or None if never closed
 
     @property
     def think_len(self) -> int:
         return max(0, self.think_span[1] - self.think_span[0])
 
 
-def profiling_spans(tokenizer, query: str, response: str, *, span: str = "answer",
-                    want_template: bool = True) -> "ProfilingSample":
+def profiling_spans(
+    tokenizer, query: str, response: str, *, span: str = "answer", want_template: bool = True
+) -> ProfilingSample:
     """Token ids + a BOOLEAN MASK over the response, for thinking-aware profiling.
 
     `profiling_ids` returns a single split point, which is all a non-reasoning
@@ -194,8 +176,9 @@ def profiling_spans(tokenizer, query: str, response: str, *, span: str = "answer
         think_text, answer_text, _ = locate_answer_text(response)
         t_start = 0
         t_end = len(tokenizer(think_text, add_special_tokens=False).input_ids) if think_text else 0
-        onset = (n_resp - len(tokenizer(answer_text, add_special_tokens=False).input_ids)
-                 if answer_text else None)
+        onset = (
+            n_resp - len(tokenizer(answer_text, add_special_tokens=False).input_ids) if answer_text else None
+        )
 
     think_span = (n_ctx + t_start, n_ctx + t_end) if t_end > t_start else (n_ctx, n_ctx)
     answer_onset = (n_ctx + onset) if onset is not None else None
@@ -204,21 +187,20 @@ def profiling_spans(tokenizer, query: str, response: str, *, span: str = "answer
     if span == "all":
         mask[n_ctx:] = True
     elif span == "think":
-        mask[think_span[0]:think_span[1]] = True
+        mask[think_span[0] : think_span[1]] = True
     elif span == "delimiter":
         # The close tag plus the few tokens around it — a short, fixed-position window
         # rather than a span, so it needs far more examples to stabilise than the
         # others (three positions per sample against a 256-expert top-8 gate). This is
         # where refusal intent collapses, which is why it is worth profiling at all.
         if t_end > 0:
-            mask[max(n_ctx, think_span[1] - 1): min(full.shape[0], think_span[1] + 2)] = True
+            mask[max(n_ctx, think_span[1] - 1) : min(full.shape[0], think_span[1] + 2)] = True
     elif span == "answer":
         if answer_onset is not None:
             mask[answer_onset:] = True
     else:
         raise ValueError(f"span={span!r} not in ('answer','think','delimiter','all')")
-    return ProfilingSample(ids=full, mask=mask, n_ctx=n_ctx,
-                           think_span=think_span, answer_onset=answer_onset)
+    return ProfilingSample(ids=full, mask=mask, n_ctx=n_ctx, think_span=think_span, answer_onset=answer_onset)
 
 
 def suffix_slot_ids(tokenizer, query: str, *, want_template: bool = True, device=None):

@@ -8,18 +8,19 @@ parameter count so a large run doesn't crash on its first step; everything here 
 **quality-neutral** (∇ of a sum = sum of ∇s; candidates are scored identically) — it
 only changes how work is chunked. Always overridable.
 """
+
 from __future__ import annotations
 
 B = 1_000_000_000
 
 # (upper_bound_total_params, defaults). First tier whose bound the model is under wins.
 _TIERS = [
-    (20 * B, dict(candidate_batch_size=128, grad_batch_size=8, n_prompts=16)),   # ≤7–14B
-    (60 * B, dict(candidate_batch_size=48, grad_batch_size=4, n_prompts=16)),    # 30–47B
-    (120 * B, dict(candidate_batch_size=24, grad_batch_size=2, n_prompts=12)),   # ~70–100B
-    (300 * B, dict(candidate_batch_size=12, grad_batch_size=1, n_prompts=8)),    # ~235B
+    (20 * B, {"candidate_batch_size": 128, "grad_batch_size": 8, "n_prompts": 16}),  # ≤7–14B
+    (60 * B, {"candidate_batch_size": 48, "grad_batch_size": 4, "n_prompts": 16}),  # 30–47B
+    (120 * B, {"candidate_batch_size": 24, "grad_batch_size": 2, "n_prompts": 12}),  # ~70–100B
+    (300 * B, {"candidate_batch_size": 12, "grad_batch_size": 1, "n_prompts": 8}),  # ~235B
 ]
-_HUGE = dict(candidate_batch_size=8, grad_batch_size=1, n_prompts=8)            # >300B
+_HUGE = {"candidate_batch_size": 8, "grad_batch_size": 1, "n_prompts": 8}  # >300B
 
 
 def param_count(model) -> int:
@@ -32,14 +33,13 @@ def param_count(model) -> int:
 
 def autoscale_attack_batches(total_params: int) -> dict:
     """Return conservative {candidate_batch_size, grad_batch_size, n_prompts} for a
-    model of `total_params`. Also suggests enabling prefix-cache + grad checkpointing
-    for anything past the smallest tier."""
+    model of `total_params`. Also suggests gradient checkpointing for anything past
+    the smallest tier."""
     chosen = _HUGE
     for bound, defaults in _TIERS:
         if total_params < bound:
             chosen = defaults
             break
     out = dict(chosen)
-    out["use_prefix_cache"] = total_params >= 20 * B
     out["grad_checkpointing"] = total_params >= 20 * B
     return out

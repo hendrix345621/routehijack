@@ -1,0 +1,18 @@
+extends: base.yaml
+
+# Shared defaults for hybrid-reasoning models. Evaluation always segments the
+# generated trace and scores the complete answer after </think>.
+model:
+  enable_thinking: true
+identify:
+  span: answer
+attacks:
+  routeaudit:
+    lambda_promote: 0.0
+    target_mode: thought
+    target_len: 32
+    ascii_only: true
+eval:
+  max_new_tokens: 2048
+  mmlu:
+    generative: true

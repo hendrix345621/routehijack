@@ -107,9 +107,7 @@ def load_model(cfg) -> LoadedModel:
         model = AutoModelForCausalLM.from_pretrained(cfg.model.hf_id, **kwargs)
     else:
         try:
-            model = AutoModelForCausalLM.from_pretrained(
-                cfg.model.hf_id, attn_implementation=impl, **kwargs
-            )
+            model = AutoModelForCausalLM.from_pretrained(cfg.model.hf_id, attn_implementation=impl, **kwargs)
             ui.info(f"attention impl: {impl}")
         except (TypeError, ValueError) as e:
             # Some trust_remote_code models don't accept attn_implementation — fall back.

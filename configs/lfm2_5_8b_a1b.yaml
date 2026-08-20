@@ -1,56 +1,15 @@
-# RouteAudit default target — LiquidAI LFM2.5-8B-A1B.
-#
-# 8B total / 1B active. The checkpoint is a 24-layer hybrid conv/attention MoE:
-# the first two layers use dense MLPs, then each token is routed to 4 of 32 experts.
-# The BF16 checkpoint is about 17 GB, so a 24 GB+ GPU is a practical starting point.
-#
-# Router layout is verified against the public Transformers implementation:
-# `model.layers[i].feed_forward.gate`. The gate selects experts by sigmoid score plus
-# a selection-only expert bias and normalizes the routed top-k weights; the `lfm2`
-# ArchSpec reproduces these semantics for capture and routing mutations.
+extends: base.yaml
 
+# Analysis-only profile: the suffix optimizer does not support its biased sigmoid gate.
 model:
   hf_id: LiquidAI/LFM2.5-8B-A1B
-  dtype: bfloat16
-  device_map: auto
   n_layers: 24
   n_experts: 32
   top_k: 4
-  d_model: 2048
-  d_expert: 1792
-  use_chat_template: true
+  arch:
+    name: lfm2
   routing:
     scoring_func: sigmoid
     use_bias: true
     norm_topk_prob: true
     routed_scaling_factor: 1.0
-  arch:
-    name: lfm2
-
-identify:
-  pairs_path: ./data/llm_lat_pairs.jsonl
-  general_corpus_path: ./data/c4_general.jsonl
-  n_pairs: 600
-  n_general: 5000
-  top_pct: 0.20
-  response_only: true
-
-attacks:
-  routeaudit:
-    suffix_len: 20
-    n_steps: 300
-    lambda_suppress: 3.0
-    lambda_promote: 1.0
-    lambda_refusal: 1.0
-    lambda_target: 1.0
-    target_len: 16
-    promote_threshold: 0.3
-    refusal_window: 1
-
-eval:
-  asr:
-    judge_hf_id: meta-llama/Llama-Guard-3-1B
-    judge_kind: llamaguard
-    n_prompts: 100
-  mmlu:
-    n_questions: 500

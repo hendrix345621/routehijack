@@ -19,13 +19,7 @@ cache/
 *.pt
 *.log
 
-# my
-TIMELINE.md
-
-# separate experiments (not part of the main pipeline)
-routeauditextras/
-adapters/
-experiments/
 
 # local-only, unfiltered harmful-completion transcripts — never commit/share
 sensitive/
+todo.md

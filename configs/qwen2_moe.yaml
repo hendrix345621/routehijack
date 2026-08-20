@@ -1,46 +1,8 @@
-# RouteAudit config — Qwen1.5-MoE-A2.7B-Chat (Qwen2-MoE).
-# 24 layers · 60 routed experts · top-4 · hidden 2048. Per-layer `.mlp` SparseMoeBlock
-# with `.gate` (Linear → logits) + `.experts` (ModuleList). Qwen2-MoE also has an
-# always-on `.shared_expert` — deliberately NOT hooked (carries no routing safety
-# signal). Uses the `qwen` ArchSpec preset.
-
+extends: base.yaml
 model:
   hf_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
-  dtype: bfloat16
-  device_map: auto
   n_layers: 24
   n_experts: 60
   top_k: 4
-  d_model: 2048
-  use_chat_template: true
   arch:
     name: qwen
-
-identify:
-  pairs_path: ./data/llm_lat_pairs.jsonl
-  general_corpus_path: ./data/c4_general.jsonl
-  n_pairs: 600
-  n_general: 5000
-  top_pct: 0.20
-  response_only: true
-
-attacks:
-  routeaudit:
-    suffix_len: 20
-    n_steps: 300
-    lambda_suppress: 3.0
-    lambda_promote: 1.0
-    lambda_refusal: 1.0
-    promote_threshold: 0.3
-    refusal_window: 1
-    lambda_target: 1.0      # affirmative-target (#1) anchors on-topic — see configs/base.yaml
-    target_len: 16
-    ascii_only: false       # OFF: target term prevents the foreign-language redirect; keep multilingual
-
-eval:
-  asr:
-    judge_hf_id: meta-llama/Llama-Guard-3-1B   # fast taxonomy judge; gated (accept license + hf auth)
-    judge_kind: llamaguard
-    n_prompts: 100
-  mmlu:
-    n_questions: 500

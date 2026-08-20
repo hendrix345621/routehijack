@@ -1,4 +1,5 @@
 """Prompt-side RouteAudit suffix helper."""
+
 from __future__ import annotations
 
 

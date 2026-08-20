@@ -18,7 +18,7 @@ carries both.
 Supported primitives include softmax, sigmoid, and sqrt-softplus affinities; flat or
 group-limited top-k; selection-only bias; score renormalization; and optional hash-routed
 leading layers. Gates that do not expose pre-selection scores can be recomputed from
-their input and weight matrix by `hooks.capture_routing`.
+their input and weight matrix while expert selections are harvested.
 """
 
 from __future__ import annotations
@@ -254,45 +254,6 @@ def route(
 # ─────────────────────────── margins ───────────────────────────
 
 
-def selection_margin(
-    sel_scores: torch.Tensor,
-    gs: GateSpec,
-    expert_ids: torch.Tensor | None = None,
-    eligible: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """How far each expert is from flipping in or out of the top-k, in selection-score
-    units. This is the quantity an input perturbation has to overcome.
-
-        margin > 0   expert is IN;  it can lose this much before dropping out
-        margin < 0   expert is OUT; it must gain this much to get in
-        margin = 0   exactly at the boundary
-
-    Concretely: an in-expert is measured against the best excluded competitor (the
-    (k+1)-th score), an out-expert against the weakest included one (the k-th score).
-
-    Returns (T, E), or (T, len(expert_ids)) when `expert_ids` selects a subset — e.g.
-    the safety experts found by the harvest phase.
-
-    For a grouped gate (V2/V3), `eligible` (from `RouteResult.eligible`) documents which
-    groups were excluded and guarantees their margin is -inf: no change to an expert's
-    own score alone can select it. The current reference already uses -inf as its mask
-    sentinel, so passing the mask is explicit but numerically idempotent. Flat gates
-    leave every expert eligible.
-    """
-    k = gs.top_k
-    top = sel_scores.topk(k + 1, dim=-1).values  # (T, k+1), descending
-    kth = top[:, k - 1 : k]  # weakest selected
-    kth_plus_1 = top[:, k : k + 1]  # best excluded
-    is_in = sel_scores >= kth
-    margin = torch.where(is_in, sel_scores - kth_plus_1, sel_scores - kth)
-    if eligible is not None:
-        margin = margin.masked_fill(~eligible, float("-inf"))
-    if expert_ids is not None:
-        ids = torch.as_tensor(expert_ids, dtype=torch.long, device=sel_scores.device)
-        margin = margin.index_select(-1, ids)
-    return margin
-
-
 # ─────────────────────────── layer classification ───────────────────────────
 
 
@@ -317,14 +278,3 @@ def learned_router_layers(n_layers: int, gs: GateSpec) -> list[int]:
     """The layers whose routing responds to content — the only valid targets for
     content-based routing analysis or an input-space attack."""
     return [i for i in range(n_layers) if routing_kind(i, gs) == LEARNED]
-
-
-def hash_route(token_ids: torch.Tensor, tid2eid: torch.Tensor) -> torch.Tensor:
-    """Hash routing: token id → experts, straight off the static table.
-
-    Trivial by construction, and that is the point — layers 0..num_hash_layers-1 are the
-    only ones whose routing ground truth is perfectly known and context-independent, so
-    they make a free correctness oracle: run any routing-capture pipeline over them and
-    it must reproduce this exactly before its output on learned layers can be trusted.
-    """
-    return tid2eid[token_ids]

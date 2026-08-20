@@ -15,6 +15,7 @@ Two paths:
                                from the ANSWER. ~50-100× costlier; the only path that
                                verifies "reasoning still works" under thinking mode.
 """
+
 from __future__ import annotations
 
 import re
@@ -22,13 +23,9 @@ from collections.abc import Iterable
 
 import torch
 
-from ..model.hooks import MoEHookManager
-from .generate import DefenseBundle
-
 PROMPT_TEMPLATE = "Question: {q}\nA) {a}\nB) {b}\nC) {c}\nD) {d}\nAnswer:"
 # Generative prompt asks for a reasoned answer ending in a parseable choice line.
-GEN_TEMPLATE = ("{q}\nA) {a}\nB) {b}\nC) {c}\nD) {d}\n\n"
-                "Answer with the single letter of the correct choice.")
+GEN_TEMPLATE = "{q}\nA) {a}\nB) {b}\nC) {c}\nD) {d}\n\nAnswer with the single letter of the correct choice."
 _LETTER_RE = re.compile(r"\b([ABCD])\b")
 
 
@@ -38,9 +35,7 @@ def mmlu_logprob_accuracy(
     tokenizer,
     questions: Iterable[dict],
     *,
-    defense: DefenseBundle = DefenseBundle(),
     device=None,
-    spec=None,
     batch_size: int = 16,
 ) -> float:
     """`questions` items: {question, choices: [4 strings], answer: int 0..3}.
@@ -55,30 +50,34 @@ def mmlu_logprob_accuracy(
     letter_ids_t = torch.tensor(letter_ids, device=device)
 
     qs = list(questions)
-    prompts = [PROMPT_TEMPLATE.format(q=q["question"], a=q["choices"][0], b=q["choices"][1],
-                                      c=q["choices"][2], d=q["choices"][3]) for q in qs]
+    prompts = [
+        PROMPT_TEMPLATE.format(
+            q=q["question"], a=q["choices"][0], b=q["choices"][1], c=q["choices"][2], d=q["choices"][3]
+        )
+        for q in qs
+    ]
     answers = [int(q["answer"]) for q in qs]
 
     prev_side = tokenizer.padding_side
-    if tokenizer.pad_token_id is None:                 # decoder-only tokenizers often lack a pad token
+    if tokenizer.pad_token_id is None:  # decoder-only tokenizers often lack a pad token
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
     correct = 0
     try:
         for i in range(0, len(prompts), batch_size):
-            chunk = prompts[i:i + batch_size]
+            chunk = prompts[i : i + batch_size]
             enc = tokenizer(chunk, return_tensors="pt", padding=True).to(device)
-            last_idx = enc["attention_mask"].sum(dim=1) - 1            # (B,) last real token per row
+            last_idx = enc["attention_mask"].sum(dim=1) - 1  # (B,) last real token per row
 
-            with MoEHookManager(model, spec) as hm:
-                if defense.router_mutator is not None:
-                    hm.set_router_mutator(defense.router_mutator)
-                logits = model(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"],
-                               use_cache=False).logits                 # (B, T, vocab)
+            logits = model(
+                input_ids=enc["input_ids"],
+                attention_mask=enc["attention_mask"],
+                use_cache=False,
+            ).logits
 
-            rows = logits[torch.arange(logits.shape[0], device=device), last_idx]   # (B, vocab)
-            preds = rows[:, letter_ids_t].argmax(dim=-1)               # (B,) in 0..3
+            rows = logits[torch.arange(logits.shape[0], device=device), last_idx]  # (B, vocab)
+            preds = rows[:, letter_ids_t].argmax(dim=-1)  # (B,) in 0..3
             for j, pred in enumerate(preds.tolist()):
                 correct += int(pred == answers[i + j])
     finally:
@@ -114,26 +113,38 @@ def mmlu_generative_accuracy(
     letter (a truncated trace or a non-committal answer) so the accuracy isn't silently
     computed over a biased subset.
     """
-    from .generate import generate_batch_ids
     from ..model.thinking import ThinkSpec, locate_answer
+    from .generate import generate_batch_ids
 
     qs = list(questions)
     if not qs:
         return {"accuracy": None, "n": 0, "n_parsed": 0, "n_unparsed": 0}
     answers = [int(q["answer"]) for q in qs]
     suf = f" {suffix}" if suffix else ""
-    prompts = [GEN_TEMPLATE.format(q=q["question"], a=q["choices"][0], b=q["choices"][1],
-                                   c=q["choices"][2], d=q["choices"][3]) + suf for q in qs]
+    prompts = [
+        GEN_TEMPLATE.format(
+            q=q["question"], a=q["choices"][0], b=q["choices"][1], c=q["choices"][2], d=q["choices"][3]
+        )
+        + suf
+        for q in qs
+    ]
 
-    gen_ids = generate_batch_ids(model, tokenizer, prompts, max_new_tokens=max_new_tokens,
-                                 batch_size=batch_size, want_template=want_template,
-                                 device=device, desc="mmlu-gen")
+    gen_ids = generate_batch_ids(
+        model,
+        tokenizer,
+        prompts,
+        max_new_tokens=max_new_tokens,
+        batch_size=batch_size,
+        want_template=want_template,
+        device=device,
+        desc="mmlu-gen",
+    )
     spec = ThinkSpec.from_tokenizer(tokenizer)
     correct = n_parsed = n_unparsed = 0
     for ids, gold in zip(gen_ids, answers):
         if spec.available:
             anchor = locate_answer(ids, spec)
-            ans_ids = ids[anchor.answer_onset:] if anchor.scoreable else []
+            ans_ids = ids[anchor.answer_onset :] if anchor.scoreable else []
         else:
             ans_ids = ids
         text = tokenizer.decode(ans_ids, skip_special_tokens=True) if len(ans_ids) else ""
@@ -144,5 +155,9 @@ def mmlu_generative_accuracy(
             continue
         n_parsed += 1
         correct += int("ABCD".index(matches[-1]) == gold)
-    return {"accuracy": (correct / n_parsed) if n_parsed else None,
-            "n": len(qs), "n_parsed": n_parsed, "n_unparsed": n_unparsed}
+    return {
+        "accuracy": (correct / n_parsed) if n_parsed else None,
+        "n": len(qs),
+        "n_parsed": n_parsed,
+        "n_unparsed": n_unparsed,
+    }

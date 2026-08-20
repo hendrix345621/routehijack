@@ -10,6 +10,7 @@ Verified layouts:
   - OLMoE    : ``model.model.layers[i].mlp``               (block) → ``.gate`` + ``.experts``
   - Mixtral  : ``model.model.layers[i].block_sparse_moe``  (block) → ``.gate`` + ``.experts``
   - DeepSeek : ``model.model.layers[i].mlp``               (block) → ``.gate`` + ``.experts``
+  - GLM-4.5  : ``model.model.layers[i].mlp``               (block) → ``.gate`` + ``.experts``
 
 The first two expose ``gate`` as an ``nn.Linear`` returning ``(T, n_experts)`` logits and
 ``experts`` as an ``nn.ModuleList`` whose members return ``(n_routed, d_model)`` — the
@@ -17,6 +18,7 @@ only contract the kept attacks rely on. DeepSeek's gate breaks the first half of
 (it returns ``(weights, indices)``), which is what ``router_output="recompute"`` and the
 companion :mod:`routeaudit.model.gate_math` exist to handle.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,34 +27,48 @@ from dataclasses import dataclass
 # names tried in order (first existing wins) so a spec survives cross-version
 # renames (e.g. Mixtral moved block_sparse_moe → mlp when experts were fused).
 PRESETS: dict[str, dict] = {
-    "olmoe": dict(
-        base_attr="model", layers_attr="layers", moe_block_attrs=("mlp",),
-        router_attr="gate", experts_attr="experts", router_output="auto",
-    ),
-    "mixtral": dict(
-        base_attr="model", layers_attr="layers",
-        moe_block_attrs=("block_sparse_moe", "mlp"),
-        router_attr="gate", experts_attr="experts", router_output="logits",
-    ),
+    "olmoe": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("mlp",),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "auto",
+    },
+    "mixtral": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("block_sparse_moe", "mlp"),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "logits",
+    },
     # Qwen2-MoE (Qwen1.5-MoE, Qwen2-57B-A14B) and Qwen3-MoE (Qwen3-30B-A3B, 235B-A22B):
     # per-layer `.mlp` is the SparseMoeBlock with `.gate` (Linear → raw logits) and
     # `.experts` (ModuleList of routed experts). Qwen2-MoE also has an always-on
     # `.shared_expert` — deliberately NOT hooked (it isn't routed, so it carries no
     # routing-level safety signal). One preset covers both; dims live in the YAML.
-    "qwen": dict(
-        base_attr="model", layers_attr="layers", moe_block_attrs=("mlp",),
-        router_attr="gate", experts_attr="experts", router_output="logits",
-    ),
+    "qwen": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("mlp",),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "logits",
+    },
     # Phi-3.5-MoE (`microsoft/Phi-3.5-MoE-instruct`, model_type `phimoe`):
     # per-layer `.block_sparse_moe` is `PhiMoESparseMoeBlock` with `.gate`
     # (plain nn.Linear → raw `(T, n_experts)` logits) and `.experts` (nn.ModuleList
     # of `PhiMoEBlockSparseTop2MLP`). Structurally identical to Mixtral — the gate
-    # is a clean Linear, so router capture + mutation both work. VERIFIED layout.
-    "phimoe": dict(
-        base_attr="model", layers_attr="layers",
-        moe_block_attrs=("block_sparse_moe", "mlp"),
-        router_attr="gate", experts_attr="experts", router_output="logits",
-    ),
+    # is a clean Linear, so router capture and suffix gradients work. VERIFIED layout.
+    "phimoe": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("block_sparse_moe", "mlp"),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "logits",
+    },
     # DeepSeekMoE V2/V3. Layout is standard — `.mlp` holds `.gate` + `.experts`
     # — but the gate is NOT a plain Linear: it returns `(weights, indices)` and never
     # exposes its pre-selection scores, so `router_output="recompute"` tells the hooks to
@@ -62,22 +78,46 @@ PRESETS: dict[str, dict] = {
     # hooked — it isn't routed, so it carries no routing-level safety signal.
     #
     # Group-limited selection is controlled declaratively through `routing.n_group`.
-    "deepseek": dict(
-        base_attr="model", layers_attr="layers", moe_block_attrs=("mlp",),
-        router_attr="gate", experts_attr="experts", router_output="recompute",
-        router_bias_attr="e_score_correction_bias",
-    ),
+    "deepseek": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("mlp",),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "recompute",
+        "router_bias_attr": "e_score_correction_bias",
+    },
+    "glm4_moe": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("mlp",),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "logits",
+        "router_bias_attr": "e_score_correction_bias",
+    },
     # Liquid LFM2.5 MoE: two initial dense layers, then each decoder layer's
     # `.feed_forward` is a sparse block with `.gate` and fused `.experts`.
     # Its gate uses sigmoid scores and an expert-bias argument for selection only.
-    "lfm2": dict(
-        base_attr="model", layers_attr="layers", moe_block_attrs=("feed_forward",),
-        router_attr="gate", experts_attr="experts", router_output="lfm2",
-    ),
+    "lfm2": {
+        "base_attr": "model",
+        "layers_attr": "layers",
+        "moe_block_attrs": ("feed_forward",),
+        "router_attr": "gate",
+        "experts_attr": "experts",
+        "router_output": "lfm2",
+    },
 }
 
-_FIELDS = ("base_attr", "layers_attr", "moe_block_attrs",
-           "router_attr", "experts_attr", "router_output", "router_bias_attr")
+_FIELDS = (
+    "base_attr",
+    "layers_attr",
+    "moe_block_attrs",
+    "router_attr",
+    "experts_attr",
+    "router_output",
+    "router_bias_attr",
+)
 
 
 @dataclass(frozen=True)
@@ -90,7 +130,7 @@ class ArchSpec:
                       fused ``(scores, topk_w, topk_idx)`` tuple from the gate).
       - "recompute" — the gate's output carries no usable score tensor (DeepSeek returns
                       only ``(weights, indices)``); routing is re-derived from the gate's
-                      *input* and weight matrix. See ``hooks.capture_routing``.
+                      *input* and weight matrix during expert harvesting.
 
     `router_bias_attr` names the auxiliary-loss-free load-balancing bias on the gate
     module, used for expert SELECTION only (never for the gating weight). Only read on
@@ -112,7 +152,7 @@ class ArchSpec:
     d_model: int = 0
 
     @classmethod
-    def from_config(cls, model_ns) -> "ArchSpec":
+    def from_config(cls, model_ns) -> ArchSpec:
         """Build a spec from a config ``model`` namespace.
 
         Reads an optional ``model.arch`` block: ``arch.name`` selects a preset

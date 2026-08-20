@@ -11,16 +11,16 @@ dependencies = [
   "torch>=2.3",
   "transformers>=5.9",
   "accelerate>=0.33",
-  "datasets>=2.20",
-  "huggingface_hub>=0.24",
-  "numpy>=1.26",
   "pyyaml>=6",
-  "tqdm>=4.66",
   "rich>=13",
 ]
 
 [project.optional-dependencies]
+data = ["datasets>=2.20"]
 dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+routeaudit = "routeaudit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
