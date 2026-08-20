@@ -198,17 +198,6 @@ that injects a foreign-language "write a poem" instruction). Two changes fix tha
   multilingual model refusing in the language a suffix nudged it into doesn't silently inflate
   ASR the way an English-only phrase list would — still a band-aid; the judge is the real fix.
 
-> **Experimental — the harm-probe distillation.** [attacks/harm_probe.py](src/routeaudit/attacks/harm_probe.py)
-> + [scripts/distill_harm_probe.py](scripts/distill_harm_probe.py) distill the judge into a tiny
-> probe over **router features** for *judge-aware gradients* at probe speed. Run it on its own:
-> ```bash
-> python scripts/distill_harm_probe.py --config qwen3.6 --judge-kind llamaguard \
->     --judge-id meta-llama/Llama-Guard-3-1B --n-prompts 200 --out artifacts/harm_probe.pt
-> ```
-> Needs both harmful and safe examples to train on; clean AdvBench generations are mostly
-> refusals, so add `--n-samples`/`--temperature` for variety (see the script's docstring).
-> Historical status notes are archived in [TIMELINE.md](docs/archive/TIMELINE.md#roadmap--open-threads).
-
 ### ⚠ Caveat — reasoning ("thinking") models
 
 RouteAudit assumes the **first generated token (`t*`) is the safety decision point** — that's

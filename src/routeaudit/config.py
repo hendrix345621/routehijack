@@ -47,10 +47,6 @@ MODELS: dict[str, str] = {
     "qwen3_6": "configs/qwen3_6_35b_a3b.yaml",
     "qwen3.6-think": "configs/qwen3_6_35b_a3b_think.yaml",  # same model, thinking mode ON (A2 attack)
     "qwen3_6_think": "configs/qwen3_6_35b_a3b_think.yaml",
-    # DeepSeekMoE V2-Lite exercises the grouped-gate path. Architecture-specific
-    # integrations live in optional adapters rather than the universal evaluator.
-    "deepseek-v2-lite": "configs/deepseek_v2_lite.yaml",
-    "deepseek_v2_lite": "configs/deepseek_v2_lite.yaml",
     "smoke": "configs/smoke.yaml",
 }
 
