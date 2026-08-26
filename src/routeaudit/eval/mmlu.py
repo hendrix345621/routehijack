@@ -96,6 +96,10 @@ def mmlu_generative_accuracy(
     device=None,
     batch_size: int = 8,
     want_template: bool = True,
+    do_sample: bool = False,
+    temperature: float = 1.0,
+    top_p: float | None = None,
+    top_k: int | None = None,
 ) -> dict:
     """Generative MMLU in the model's actual mode, scored on the ANSWER span.
 
@@ -137,6 +141,10 @@ def mmlu_generative_accuracy(
         batch_size=batch_size,
         want_template=want_template,
         device=device,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
         desc="mmlu-gen",
     )
     spec = ThinkSpec.from_tokenizer(tokenizer)

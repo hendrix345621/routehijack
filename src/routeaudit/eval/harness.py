@@ -47,6 +47,10 @@ def run_cell(
     spec=None,
     want_template: bool = True,
     gen_batch_size: int = 8,
+    do_sample: bool = False,
+    temperature: float = 1.0,
+    top_p: float | None = None,
+    top_k: int | None = None,
 ) -> CellResult:
     from ..model.thinking import ScoredBatch, ThinkSpec, audit_format
 
@@ -61,6 +65,10 @@ def run_cell(
         max_new_tokens=max_new_tokens,
         batch_size=gen_batch_size,
         want_template=want_template,
+        do_sample=do_sample,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
         desc=name,
     )
 

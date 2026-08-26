@@ -22,7 +22,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Short model nicknames → config files. Add a line here when you add a config.
 MODELS: dict[str, str] = {
-    # OLMoE is the small, fully supported default. LFM2 profiles are analysis-only.
+    # The default is the smallest official Qwen3 thinking MoE in its native FP8
+    # form. OLMoE remains the low-cost non-thinking alternative.
+    "default": "configs/default.yaml",
     "liquid": "configs/lfm2_5_8b_a1b.yaml",
     "lfm2": "configs/lfm2_5_8b_a1b.yaml",
     "base": "configs/base.yaml",
@@ -30,6 +32,7 @@ MODELS: dict[str, str] = {
     "mixtral": "configs/mixtral.yaml",
     "qwen2": "configs/qwen2_moe.yaml",
     "qwen3": "configs/qwen3_moe.yaml",
+    "qwen3-fp8": "configs/default.yaml",
     "qwen3-think-smoke": "configs/qwen3_30b_a3b_fp8_think_smoke.yaml",
     "qwen3-235b": "configs/qwen3_235b_a22b.yaml",
     "qwen3.6": "configs/qwen3_6_35b_a3b.yaml",  # dims verified from config.json (hybrid attention)

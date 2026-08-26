@@ -1,0 +1,12 @@
+extends: qwen3_moe.yaml
+
+# Smallest official Qwen3 thinking MoE, using the vendor's native FP8 checkpoint
+# to reduce persistent-disk and VRAM pressure on a rented GPU. Do not re-quantize:
+# dtype=auto preserves the checkpoint's shipped precision.
+model:
+  hf_id: Qwen/Qwen3-30B-A3B-FP8
+  dtype: auto
+  load:
+    attn_implementation: sdpa
+    offload_folder: ./cache/model_offload
+    offload_state_dict: true

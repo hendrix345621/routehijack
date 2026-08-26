@@ -1,7 +1,8 @@
 # RouteAudit rented-GPU runbook
 
-Use persistent disk for model caches, datasets, checkpoints, and results. Do not use
-`/dev/shm`: it is capacity-limited and disappears when the machine stops.
+Use persistent disk for model caches, temporary downloads, datasets, checkpoints,
+offload files, and results. Do not use `/dev/shm`: it is capacity-limited and
+disappears when the machine stops.
 
 ## Set up the disk
 
@@ -13,43 +14,81 @@ cd /workspace
 git clone https://github.com/hendrix345621/routeaudit
 cd routeaudit
 
-export HF_HOME=/workspace/huggingface
-export HF_HUB_CACHE=$HF_HOME/hub
-export TOKENIZERS_PARALLELISM=false
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-mkdir -p "$HF_HOME" data artifacts cache
 python -m pip install -e ".[data,dev]"
 hf auth login
 ```
 
-Keep `/workspace/huggingface`, `data`, `cache`, and `artifacts` when stopping or
-restarting the rented GPU. Check free disk space before downloading a checkpoint.
+The Makefile creates and exports the disk-backed cache paths. Its default layout is:
+
+```text
+/workspace/huggingface/          downloaded model snapshots
+/workspace/cache/                library caches
+/workspace/tmp/                  temporary downloads and state-dict staging
+/workspace/routeaudit-data/      prepared datasets
+/workspace/routeaudit-offload/   Accelerate model/state-dict offload
+/workspace/routeaudit-artifacts/ checkpoints and results
+```
+
+Set `PERSIST_ROOT` when your provider uses another mount, for example
+`make run PERSIST_ROOT=/mnt/persistent`. The Makefile refuses `/dev/shm`. Keep these
+directories when stopping or restarting the rented GPU, and check free disk space
+before downloading the checkpoint.
+
+Disk backs storage and loading; model layers should still run in GPU VRAM. If the
+loader reports CPU or disk layers, rent a larger GPU or use a compatible multi-GPU
+profile because training-style suffix optimization will otherwise be extremely slow.
+
+## Verify thinking mode
+
+The default model is `Qwen/Qwen3-30B-A3B-FP8`, the smallest official Qwen3 MoE with
+thinking support. Qwen3-0.6B through 14B are smaller thinking models, but they are dense
+and cannot test expert routing. The native FP8 checkpoint reduces disk and VRAM pressure
+without applying a second quantization pass.
+
+Run the focused two-prompt generation check before the pipeline:
+
+```bash
+make thinking-check
+```
+
+Success requires both generations to contain a completed thinking trace, a parseable
+post-`</think>` answer, and the expected answer. The machine-readable result is written
+to `/workspace/routeaudit-artifacts/quick_reasoning.json`. If a trace is truncated:
+
+```bash
+make thinking-check THINKING_ARGS="--max-new-tokens 1024"
+```
+
+This is the runtime check that the template setting worked; merely passing
+`enable_thinking: true` is not treated as proof.
 
 ## Run
 
-The CLI owns execution; the Makefile only runs repository checks.
+`make run` uses the reduced `smoke` workload with the default thinking MoE:
 
 ```bash
-# Small pipeline check
-routeaudit run --config smoke
+make run
 
-# Official Qwen 35B-A3B MoE, thinking enabled by default
-routeaudit run --config qwen3.6
+# Full dataset and optimization settings, same model
+make run CONFIG=default
+
+# Override normal CLI controls
+make run RUN_ARGS="--skip-data --stop-after harvest"
+
+# Official Qwen 35B-A3B MoE
+make run CONFIG=qwen3.6
 
 # GLM-4.5-Air: use a transferred suffix because its biased sigmoid router
 # does not support this repository's suffix optimizer
-routeaudit run --config glm4.5-air \
-  --skip-data \
-  --suffix-input artifacts/transferred_suffix.json
+make run CONFIG=glm4.5-air \
+  RUN_ARGS="--skip-data --suffix-input /workspace/routeaudit-artifacts/transferred_suffix.json"
 ```
 
 For a transferred suffix, the complete target flow is:
 
 ```bash
-routeaudit run --config qwen3.6 \
-  --skip-data \
-  --suffix-input artifacts/transferred_suffix.json
+make run CONFIG=qwen3.6 \
+  RUN_ARGS="--skip-data --suffix-input /workspace/routeaudit-artifacts/transferred_suffix.json"
 ```
 
 The `run` command loads the target model once. Use `--stop-after harvest` when you only
@@ -63,6 +102,7 @@ profile sets:
 - `model.enable_thinking: true`
 - `identify.span: answer`
 - `eval.max_new_tokens: 2048`
+- sampled generation with `temperature: 0.6`, `top_p: 0.95`, `top_k: 20`
 - `eval.mmlu.generative: true`
 
 Evaluation does not judge the first generated character or the reasoning preamble. It
@@ -71,13 +111,13 @@ classifier judge, and marks an unfinished reasoning trace as unscoreable. Genera
 also parses the complete post-thinking answer; the cheaper log-prob MMLU remains a separate
 suffix-independent diagnostic.
 
-Inspect `artifacts/results/summary.md` and `samples.jsonl`. A high truncation rate means
-`eval.max_new_tokens` must be increased before trusting ASR.
+Inspect `/workspace/routeaudit-artifacts/results/summary.md` and `samples.jsonl`. A high
+truncation rate means `eval.max_new_tokens` must be increased before trusting ASR.
 
 ## Outputs
 
 ```text
-artifacts/
+/workspace/routeaudit-artifacts/
   safety_experts.json
   harmful_experts.json
   routeaudit_universal.json

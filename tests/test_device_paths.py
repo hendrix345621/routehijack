@@ -26,6 +26,19 @@ def test_loader_auto_dtype_honors_prequantized_checkpoint_metadata():
     assert _resolve_dtype(SimpleNamespace(dtype="auto")) == "auto"
 
 
+def test_persistent_offload_env_overrides_relative_config(monkeypatch):
+    monkeypatch.setenv("ROUTEAUDIT_OFFLOAD_DIR", "/workspace/routeaudit-offload")
+    monkeypatch.setenv("ROUTEAUDIT_OFFLOAD_STATE_DICT", "1")
+    model = SimpleNamespace(
+        load=SimpleNamespace(offload_folder="./cache/model_offload", offload_state_dict=False)
+    )
+
+    opts = loader_mod._load_opts(model)
+
+    assert opts["offload_folder"] == "/workspace/routeaudit-offload"
+    assert opts["offload_state_dict"] is True
+
+
 def test_loader_passes_checkpoint_revision_and_native_expert_backend(monkeypatch):
     calls = {}
 

@@ -1,4 +1,4 @@
-extends: base.yaml
+extends: default.yaml
 data:
   n_pairs: 16
   n_general: 32

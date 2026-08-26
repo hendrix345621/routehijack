@@ -165,6 +165,7 @@ class _FakeTokenizer:
 
     def __init__(self, emit_think_in_prompt=True):
         self._emit = emit_think_in_prompt
+        self.last_template_kwargs = None
         self.chat_template = "fake"  # truthy → has_chat_template() is True
         self._vocab = {"<think>": 100, "</think>": 101}
 
@@ -172,6 +173,7 @@ class _FakeTokenizer:
         return self._vocab.get(s, self.unk_token_id)
 
     def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=True, **kw):
+        self.last_template_kwargs = kw
         user = msgs[-1]["content"]
         tail = "<|assistant|>\n<think>\n" if self._emit else "<|assistant|>\n"
         return f"<|user|>\n{user}<|end|>\n{tail}"
@@ -188,6 +190,20 @@ def test_thinkspec_resolves_ids_from_tokenizer():
     assert spec.open_id == 100
     assert spec.close_id == 101
     assert spec.available
+
+
+def test_thinking_setting_reaches_chat_template():
+    from routeaudit.model import prompting
+
+    tok = _FakeTokenizer()
+    try:
+        prompting.set_chat_template_kwargs({"enable_thinking": True})
+        prompting.render_user_turn(tok, "test")
+
+        assert tok.last_template_kwargs["enable_thinking"] is True
+        assert prompting.thinking_requested() is True
+    finally:
+        prompting.set_chat_template_kwargs({})
 
 
 def test_thinkspec_rejects_unk_mapping():

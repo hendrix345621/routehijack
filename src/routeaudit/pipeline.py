@@ -314,6 +314,7 @@ def eval_run(loaded, cfg, args) -> dict:
     # so a thinking config's larger budgets aren't silently overridden by a 128 default).
     eval_ns = getattr(cfg, "eval", object())
     asr_ns = getattr(eval_ns, "asr", object())
+    gen_ns = getattr(eval_ns, "generation", object())
     n_prompts = _g(args, "n_prompts", None) or getattr(asr_ns, "n_prompts", None) or 100
     max_new_tokens = _g(args, "max_new_tokens", None) or getattr(eval_ns, "max_new_tokens", None) or 128
     prompts = [r["prompt"] for r in list(read_jsonl(_g(args, "advbench", "data/advbench.jsonl")))[:n_prompts]]
@@ -337,6 +338,10 @@ def eval_run(loaded, cfg, args) -> dict:
         "spec": spec,
         "want_template": use_tmpl,
         "gen_batch_size": _g(args, "gen_batch_size", 8),
+        "do_sample": bool(getattr(gen_ns, "do_sample", False)),
+        "temperature": float(getattr(gen_ns, "temperature", 1.0)),
+        "top_p": getattr(gen_ns, "top_p", None),
+        "top_k": getattr(gen_ns, "top_k", None),
     }
     results = [
         run_cell(model, tok, "clean", prompts, attack_label="none", **common),
@@ -373,6 +378,10 @@ def eval_run(loaded, cfg, args) -> dict:
             "max_new_tokens": max_new_tokens,
             "want_template": use_tmpl,
             "batch_size": _g(args, "gen_batch_size", 8),
+            "do_sample": bool(getattr(gen_ns, "do_sample", False)),
+            "temperature": float(getattr(gen_ns, "temperature", 1.0)),
+            "top_p": getattr(gen_ns, "top_p", None),
+            "top_k": getattr(gen_ns, "top_k", None),
         }
         clean_u = mmlu_generative_accuracy(model, tok, mmlu_q, suffix="", **gk)
         atk_u = mmlu_generative_accuracy(model, tok, mmlu_q, suffix=suffix, **gk)

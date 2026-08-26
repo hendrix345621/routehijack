@@ -14,5 +14,10 @@ attacks:
     ascii_only: true
 eval:
   max_new_tokens: 2048
+  generation:
+    do_sample: true
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
   mmlu:
     generative: true

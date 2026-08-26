@@ -1,7 +1,4 @@
-extends: qwen3_moe.yaml
-model:
-  hf_id: Qwen/Qwen3-30B-A3B-FP8
-  dtype: auto
+extends: default.yaml
 data:
   n_pairs: 16
   n_general: 32

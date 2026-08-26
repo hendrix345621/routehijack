@@ -19,7 +19,10 @@ from routeaudit.ui import _transcript_verdict
 def test_profiles_inherit_defaults_and_smoke_limits() -> None:
     smoke = config.load("smoke")
 
-    assert smoke.model.arch.name == "olmoe"
+    assert smoke.model.arch.name == "qwen"
+    assert smoke.model.hf_id == "Qwen/Qwen3-30B-A3B-FP8"
+    assert smoke.model.dtype == "auto"
+    assert smoke.model.enable_thinking is True
     assert smoke.data.n_pairs == 16
     assert smoke.data.n_general == 32
     assert smoke.attacks.routeaudit.n_steps == 10
@@ -28,6 +31,21 @@ def test_profiles_inherit_defaults_and_smoke_limits() -> None:
     qwen_smoke = config.load("qwen3-think-smoke")
     assert qwen_smoke.attacks.routeaudit.n_steps == 10
     assert qwen_smoke.data.n_general == 32
+
+
+def test_cli_defaults_to_smallest_supported_thinking_moe() -> None:
+    args = cli.build_parser().parse_args(["run"])
+    cfg = config.load(args.config)
+
+    assert args.config == "default"
+    assert cfg.model.hf_id == "Qwen/Qwen3-30B-A3B-FP8"
+    assert cfg.model.enable_thinking is True
+    assert cfg.identify.span == "answer"
+    assert cfg.eval.mmlu.generative is True
+    assert cfg.eval.generation.do_sample is True
+    assert cfg.eval.generation.temperature == pytest.approx(0.6)
+    assert cfg.eval.generation.top_p == pytest.approx(0.95)
+    assert cfg.eval.generation.top_k == 20
 
 
 def test_analysis_only_router_fails_before_attack() -> None:

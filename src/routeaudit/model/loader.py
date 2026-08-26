@@ -4,6 +4,7 @@ the hooks in `hooks.py`. Presets exist for OLMoE and Mixtral."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -69,11 +70,20 @@ def _load_opts(model_ns) -> dict:
     """Optional `model.load:` block — placement/backend knobs, never re-quantization."""
     lo = getattr(model_ns, "load", None)
     g = (lambda k, d=None: getattr(lo, k, d)) if lo is not None else (lambda k, d=None: d)
+    # The rented-GPU Makefile sets this to persistent storage. Keeping the YAML
+    # fallback makes direct CLI runs deterministic and backwards compatible.
+    offload_folder = os.environ.get("ROUTEAUDIT_OFFLOAD_DIR") or g("offload_folder")
+    disk_state_dict = os.environ.get("ROUTEAUDIT_OFFLOAD_STATE_DICT")
+    offload_state_dict = (
+        bool(g("offload_state_dict", False))
+        if disk_state_dict is None
+        else disk_state_dict.lower() not in {"", "0", "false", "no"}
+    )
     return {
         "attn_implementation": g("attn_implementation", "sdpa"),
         "max_memory": _coerce_max_memory(g("max_memory")),
-        "offload_folder": g("offload_folder"),
-        "offload_state_dict": bool(g("offload_state_dict", False)),
+        "offload_folder": offload_folder,
+        "offload_state_dict": offload_state_dict,
         "experts_implementation": g("experts_implementation"),
     }
 

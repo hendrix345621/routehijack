@@ -18,21 +18,25 @@ def _data_paths(cfg, data_dir: str) -> None:
     cfg.identify.general_corpus_path = str(root / "c4_general.jsonl")
 
 
-def _common_paths(data_dir: str) -> dict:
+DEFAULT_PROFILE = "default"
+
+
+def _common_paths(data_dir: str, artifacts_dir: str) -> dict:
     root = Path(data_dir)
+    artifacts = Path(artifacts_dir)
     return {
         "advbench": str(root / "advbench.jsonl"),
         "mmlu": str(root / "mmlu_subset.jsonl"),
-        "safety": "artifacts/safety_experts.json",
-        "harmful": "artifacts/harmful_experts.json",
-        "suffix": "artifacts/routeaudit_universal.json",
-        "results_dir": "artifacts/results",
+        "safety": str(artifacts / "safety_experts.json"),
+        "harmful": str(artifacts / "harmful_experts.json"),
+        "suffix": str(artifacts / "routeaudit_universal.json"),
+        "results_dir": str(artifacts / "results"),
     }
 
 
 def _phase_args(args, **extra):
     values = vars(args).copy()
-    values.update(_common_paths(args.data_dir))
+    values.update(_common_paths(args.data_dir, args.artifacts_dir))
     values.update(extra)
     return SimpleNamespace(**values)
 
@@ -101,8 +105,11 @@ def _dispatch(args) -> None:
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", default="base", help="profile, YAML path, or Hugging Face model id")
+    parser.add_argument(
+        "--config", default=DEFAULT_PROFILE, help="profile, YAML path, or Hugging Face model id"
+    )
     parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--artifacts-dir", default="artifacts")
 
 
 def _add_data(parser: argparse.ArgumentParser) -> None:

@@ -23,14 +23,24 @@ Authenticate with Hugging Face before using gated model or judge repositories.
 
 ## Quick start
 
-Run the small smoke profile:
+The default target is `Qwen/Qwen3-30B-A3B-FP8`: the smallest official Qwen3
+thinking-capable MoE, in its native lower-footprint checkpoint format. The smaller
+Qwen3 releases are dense models and cannot exercise RouteAudit's expert-routing attack.
+
+On a rented GPU with persistent storage mounted at `/workspace`, run the small profile:
 
 ```bash
-routeaudit run --config smoke
+make run
 ```
 
+`make run` defaults to the reduced `smoke` workload and keeps Hugging Face caches,
+temporary files, datasets, model offload, and artifacts on persistent disk. Run
+`make thinking-check` first to verify that the model emits a closed thinking trace and
+that answer segmentation works. See `runbook.md` for mount overrides and full runs.
+
 The `run` command prepares data, loads the model once, then performs harvest, attack,
-and evaluation. `python -m routeaudit.cli` is equivalent when the console entry point
+and evaluation. Without `--config`, the CLI uses the same FP8 thinking model with the
+full workload. `python -m routeaudit.cli` is equivalent when the console entry point
 is not installed.
 
 Individual phases are also available:
@@ -59,16 +69,18 @@ Profiles are small YAML overrides that inherit from `configs/base.yaml`.
 
 | Profile | Purpose | Suffix attack |
 |---|---|---|
-| `base`, `olmoe` | supported low-cost default | yes |
-| `smoke` | tiny end-to-end regression run | yes |
+| `default`, `qwen3-fp8` | smallest supported thinking MoE; native FP8 | yes |
+| `smoke`, `qwen3-think-smoke` | reduced run using the default thinking MoE | yes |
+| `base`, `olmoe` | low-cost non-thinking OLMoE alternative | yes |
 | `mixtral`, `qwen2`, `qwen3`, `qwen3-235b` | plain top-k MoE targets | yes |
 | `qwen3.6`, `qwen3.6-think` | official 35B-A3B Qwen MoE; thinking is default | yes |
 | `glm4.5-air`, `glm-air` | GLM-4.5-Air biased sigmoid MoE | analysis/eval only |
 | `liquid`, `lfm2` | biased sigmoid-router analysis | no |
 
 Qwen3-family and GLM-4.5-Air profiles inherit `configs/thinking.yaml`: thinking,
-answer-span harvesting, and generative MMLU are enabled by default. Evaluation judges
-the complete answer after `</think>` and treats unfinished traces as unscoreable.
+Qwen-recommended sampled generation, answer-span harvesting, and generative MMLU are
+enabled by default. Evaluation judges the complete answer after `</think>` and treats
+unfinished traces as unscoreable.
 
 LFM2 remains useful for expert harvesting and clean evaluation, but its biased sigmoid
 gate is not mathematically compatible with the current suffix objective. The CLI rejects
@@ -119,8 +131,9 @@ artifacts/
 
 ## Configuration
 
-Shared defaults live in `configs/base.yaml`. A new profile normally needs only an
-inheritance line and its model-specific fields:
+Shared non-thinking defaults live in `configs/base.yaml`; the selected runnable default
+is `configs/default.yaml`. A new profile normally needs only an inheritance line and
+its model-specific fields:
 
 ```yaml
 extends: base.yaml
